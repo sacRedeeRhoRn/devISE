@@ -1,0 +1,99 @@
+#!/usr/bin/env node
+
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+import { RoleService } from "./lib/service.js";
+import { repoRootFromModule } from "./lib/paths.js";
+import { startMcpServer } from "./mcp/server.js";
+
+async function main(): Promise<void> {
+  const repoRoot = repoRootFromModule(import.meta.url);
+  const cliEntrypoint = fileURLToPath(import.meta.url);
+  const service = new RoleService(repoRoot, cliEntrypoint);
+  const [command, ...rest] = process.argv.slice(2);
+
+  switch (command) {
+    case "install": {
+      const result = await service.install();
+      console.log(`Prompt: ${result.promptPath}`);
+      console.log(`Skill: ${result.skillPath}`);
+      console.log(`Config: ${result.configPath}`);
+      return;
+    }
+
+    case "doctor": {
+      const projectRoot = rest[0];
+      const findings = await service.doctor(projectRoot);
+      for (const line of findings) {
+        console.log(line);
+      }
+      return;
+    }
+
+    case "status": {
+      const projectRoot = rest[0] ?? process.cwd();
+      const status = await service.getStatus(projectRoot);
+      console.log(`project: ${status.project.project.id}`);
+      console.log(`root: ${status.project.project.root}`);
+      console.log(`loop: ${status.runtime.loop.status}`);
+      console.log(`iteration: ${status.runtime.loop.iteration}`);
+      console.log(`pid: ${status.runtime.loop.pid ?? "none"}`);
+      console.log(`controller_alive: ${status.controllerAlive}`);
+      console.log(`roles: ${Object.keys(status.runtime.roles).join(", ") || "none"}`);
+      if (status.runtime.loop.lastReportPath) {
+        console.log(`last_report: ${status.runtime.loop.lastReportPath}`);
+      }
+      if (status.runtime.loop.lastCommitSha) {
+        console.log(`last_commit: ${status.runtime.loop.lastCommitSha}`);
+      }
+      if (status.runtime.loop.lastError) {
+        console.log(`last_error: ${status.runtime.loop.lastError}`);
+      }
+      return;
+    }
+
+    case "serve":
+      await startMcpServer(service);
+      return;
+
+    case "run-loop": {
+      const projectRoot = valueForFlag(rest, "--project-root");
+      const startRole = valueForFlag(rest, "--start-role");
+      if (!projectRoot || (startRole !== "developer" && startRole !== "debugger")) {
+        throw new Error(`run-loop requires --project-root and --start-role`);
+      }
+      await service.runLoopForeground({
+        projectRoot: path.resolve(projectRoot),
+        startRole,
+      });
+      return;
+    }
+
+    default:
+      printUsage();
+  }
+}
+
+function valueForFlag(args: string[], flag: string): string | undefined {
+  const index = args.indexOf(flag);
+  if (index < 0) {
+    return undefined;
+  }
+  return args[index + 1];
+}
+
+function printUsage(): never {
+  console.error(`Usage:
+  codex-role install
+  codex-role doctor [project-root]
+  codex-role status [project-root]
+  codex-role serve
+  codex-role run-loop --project-root <path> --start-role <developer|debugger>`);
+  process.exit(1);
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});
