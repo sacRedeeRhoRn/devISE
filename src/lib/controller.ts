@@ -2,7 +2,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
-import { CodexAppServerClient, type ThreadLike } from "./appServerClient.js";
+import {
+  CodexAppServerClient,
+  type ThreadItemLike,
+  type ThreadLike,
+  type ThreadTurnLike,
+} from "./appServerClient.js";
 import { ensureDir, pathExists, readTextIfExists } from "./fs.js";
 import {
   repoRootFromModule,
@@ -15,6 +20,7 @@ import {
   resolveArtifactsDir,
   resolveControllerLogPath,
   resolveProjectConfigPath,
+  resolveWatchEventsPath,
   saveRuntimeState,
 } from "./project.js";
 import type {
@@ -23,6 +29,7 @@ import type {
   ProjectConfig,
   RoleKind,
   RuntimeState,
+  WatchEventRecord,
 } from "./types.js";
 
 type ResolvedLoopStartInput = LoopStartInput & {
@@ -106,10 +113,12 @@ export async function runLoop(
   runtime.loop.startRole = input.startRole;
   runtime.loop.lastError = undefined;
   await saveRuntimeState(runtime);
-  await appendControllerEvent(
-    project.project.root,
-    `event=loop_started start_role=${input.startRole} task=${JSON.stringify(input.task)}`,
-  );
+  await appendWatchEvent(project.project.root, {
+    kind: "loop_started",
+    role: input.startRole,
+    status: "running",
+    message: `Loop started with ${input.startRole} as the first role`,
+  });
 
   const client = new CodexAppServerClient();
   const previousOutcomeByRole = new Map<RoleKind, string>();
@@ -128,10 +137,14 @@ export async function runLoop(
       runtime.loop.iteration = iteration;
       runtime.loop.lastRole = currentRole;
       await saveRuntimeState(runtime);
-      await appendControllerEvent(
-        project.project.root,
-        `iter=${iteration} role=${currentRole} event=turn_started`,
-      );
+      await appendWatchEvent(project.project.root, {
+        kind: "turn_started",
+        iteration,
+        role: currentRole,
+        status: "inProgress",
+        threadId: runtime.roles[currentRole]?.threadId,
+        message: `${capitalizeRole(currentRole)} turn started`,
+      });
 
       await ensureManagedBranch(project.project.root, project.git.role_branch);
       const result = await runRoleTurn(
@@ -178,10 +191,13 @@ export async function runLoop(
         runtime.loop.endedAt = new Date().toISOString();
         runtime.loop.pid = undefined;
         await saveRuntimeState(runtime);
-        await appendControllerEvent(
-          project.project.root,
-          `iter=${iteration} role=${currentRole} event=loop_failed reason=${JSON.stringify(runtime.loop.lastError)}`,
-        );
+        await appendWatchEvent(project.project.root, {
+          kind: "loop_failed",
+          iteration,
+          role: currentRole,
+          status: "failed",
+          message: `Loop failed: ${runtime.loop.lastError}`,
+        });
         return runtime;
       }
 
@@ -191,10 +207,13 @@ export async function runLoop(
         runtime.loop.endedAt = new Date().toISOString();
         runtime.loop.pid = undefined;
         await saveRuntimeState(runtime);
-        await appendControllerEvent(
-          project.project.root,
-          `iter=${iteration} role=${currentRole} event=loop_blocked reason=${JSON.stringify(runtime.loop.lastError)}`,
-        );
+        await appendWatchEvent(project.project.root, {
+          kind: "loop_blocked",
+          iteration,
+          role: currentRole,
+          status: "blocked",
+          message: `Loop blocked: ${runtime.loop.lastError}`,
+        });
         return runtime;
       }
 
@@ -203,10 +222,13 @@ export async function runLoop(
         runtime.loop.endedAt = new Date().toISOString();
         runtime.loop.pid = undefined;
         await saveRuntimeState(runtime);
-        await appendControllerEvent(
-          project.project.root,
-          `iter=${iteration} role=${currentRole} event=loop_completed`,
-        );
+        await appendWatchEvent(project.project.root, {
+          kind: "loop_completed",
+          iteration,
+          role: currentRole,
+          status: "completed",
+          message: "Loop completed successfully",
+        });
         return runtime;
       }
 
@@ -218,10 +240,11 @@ export async function runLoop(
     runtime.loop.endedAt = new Date().toISOString();
     runtime.loop.pid = undefined;
     await saveRuntimeState(runtime);
-    await appendControllerEvent(
-      project.project.root,
-      `event=loop_failed reason=${JSON.stringify(runtime.loop.lastError)}`,
-    );
+    await appendWatchEvent(project.project.root, {
+      kind: "loop_failed",
+      status: "failed",
+      message: `Loop failed: ${runtime.loop.lastError}`,
+    });
     return runtime;
   } catch (error) {
     runtime.loop.status = "failed";
@@ -229,10 +252,12 @@ export async function runLoop(
     runtime.loop.endedAt = new Date().toISOString();
     runtime.loop.pid = undefined;
     await saveRuntimeState(runtime);
-    await appendControllerEvent(
-      project.project.root,
-      `event=loop_failed reason=${JSON.stringify(runtime.loop.lastError)}`,
-    );
+    await appendWatchEvent(project.project.root, {
+      kind: "loop_failed",
+      role: currentRole,
+      status: "failed",
+      message: `Loop failed: ${runtime.loop.lastError}`,
+    });
     throw error;
   } finally {
     await client.close();
@@ -341,8 +366,21 @@ async function runRoleTurn(
     outputSchema: ROLE_OUTPUT_SCHEMAS[role],
     personality: "pragmatic",
   });
-  await client.waitForTurnCompletion(roleSession.threadId, 30 * 60 * 1000, priorTurnCount);
-  const thread = await readTerminalTurnSnapshot(client, roleSession.threadId, priorTurnCount);
+  const activityMonitor = startTurnActivityMonitor(
+    client,
+    project.project.root,
+    roleSession.threadId,
+    role,
+    iteration,
+    priorTurnCount,
+  );
+  let thread: ThreadLike;
+  try {
+    await client.waitForTurnCompletion(roleSession.threadId, 30 * 60 * 1000, priorTurnCount);
+    thread = await readTerminalTurnSnapshot(client, roleSession.threadId, priorTurnCount);
+  } finally {
+    await activityMonitor.stop();
+  }
   const lastTurn = thread.turns.at(-1);
   if (!lastTurn) {
     throw new Error(`No completed turn found for ${roleSession.threadId}`);
@@ -370,6 +408,25 @@ async function runRoleTurn(
     validateDebuggerTurnResult(project, parsed);
   }
 
+  const finalArtifactPath = parsed.report_path ?? parsed.handoff_report_path;
+  if (finalArtifactPath) {
+    await appendWatchEvent(project.project.root, {
+      kind: "artifact_written",
+      iteration,
+      role,
+      message: `${capitalizeRole(role)} updated ${path.basename(finalArtifactPath)}`,
+      artifactPath: finalArtifactPath,
+    });
+  }
+  if (parsed.commit_sha) {
+    await appendWatchEvent(project.project.root, {
+      kind: "commit_recorded",
+      iteration,
+      role,
+      message: `${capitalizeRole(role)} recorded commit ${parsed.commit_sha.slice(0, 12)}`,
+      commitSha: parsed.commit_sha,
+    });
+  }
   await appendControllerLog(project.project.root, role, iteration, parsed);
   return parsed;
 }
@@ -434,7 +491,8 @@ ${counterpartSummary}
 
 Required artifact path: ${artifactPath}
 
-Return JSON only.
+During the turn, emit brief progress updates before or after major phases so the live monitor can track what you are doing.
+Your final assistant message must be JSON only.
 `;
 }
 
@@ -491,6 +549,153 @@ async function readTerminalTurnSnapshot(
 
   return client.readThread(threadId, true);
 }
+
+function startTurnActivityMonitor(
+  client: CodexAppServerClient,
+  projectRoot: string,
+  threadId: string,
+  role: RoleKind,
+  iteration: number,
+  priorTurnCount: number,
+): { stop: () => Promise<void> } {
+  let stopped = false;
+  const seenKeys = new Set<string>();
+
+  const pump = (async () => {
+    while (!stopped) {
+      const terminal = await captureThreadObservableEvents(
+        client,
+        projectRoot,
+        threadId,
+        role,
+        iteration,
+        priorTurnCount,
+        seenKeys,
+      );
+      if (terminal) {
+        return;
+      }
+      await delay(1000);
+    }
+  })();
+
+  return {
+    stop: async () => {
+      stopped = true;
+      await captureThreadObservableEvents(
+        client,
+        projectRoot,
+        threadId,
+        role,
+        iteration,
+        priorTurnCount,
+        seenKeys,
+      );
+      await pump.catch(() => {});
+    },
+  };
+}
+
+async function captureThreadObservableEvents(
+  client: CodexAppServerClient,
+  projectRoot: string,
+  threadId: string,
+  role: RoleKind,
+  iteration: number,
+  priorTurnCount: number,
+  seenKeys: Set<string>,
+): Promise<boolean> {
+  let thread: ThreadLike;
+  try {
+    thread = await client.readThread(threadId, true);
+  } catch {
+    return false;
+  }
+
+  if (thread.turns.length <= priorTurnCount) {
+    return false;
+  }
+
+  const turn = thread.turns.at(-1);
+  if (!turn) {
+    return false;
+  }
+
+  const terminal = ["completed", "failed", "interrupted"].includes(turn.status);
+  const turnStatusEvent: WatchEventRecord = {
+    version: 1,
+    at: new Date().toISOString(),
+    kind: "turn_status",
+    iteration,
+    role,
+    status: turn.status,
+    threadId,
+    message: `${capitalizeRole(role)} turn is ${turn.status}`,
+  };
+  await appendWatchEventIfNew(projectRoot, turnStatusEvent, seenKeys);
+
+  for (const event of extractObservableTurnEvents(turn, role, iteration, threadId)) {
+    await appendWatchEventIfNew(projectRoot, event, seenKeys);
+  }
+
+  return terminal;
+}
+
+function extractObservableTurnEvents(
+  turn: ThreadTurnLike,
+  role: RoleKind,
+  iteration: number,
+  threadId: string,
+): WatchEventRecord[] {
+  const events: WatchEventRecord[] = [];
+
+  for (const item of turn.items) {
+    if (item.type === "agentMessage") {
+      const text = normalizeMessage(extractItemText(item));
+      if (!text || looksLikeJsonObject(text)) {
+        continue;
+      }
+      events.push({
+        version: 1,
+        at: new Date().toISOString(),
+        kind: "commentary",
+        iteration,
+        role,
+        status: turn.status,
+        threadId,
+        itemId: item.id,
+        itemType: item.type,
+        message: text,
+      });
+      continue;
+    }
+
+    if (item.type === "commandExecution") {
+      const finished = item.status === "completed" || item.status === "failed";
+      const command = item.command?.trim();
+      events.push({
+        version: 1,
+        at: new Date().toISOString(),
+        kind: finished ? "command_finished" : "command_started",
+        iteration,
+        role,
+        status: item.status ?? turn.status,
+        threadId,
+        itemId: item.id,
+        itemType: item.type,
+        command,
+        outputPreview: finished ? previewOutput(item.aggregatedOutput) : undefined,
+        message: finished
+          ? `${capitalizeRole(role)} ${item.status === "failed" ? "failed" : "completed"} ${shortCommand(command)}`
+          : `${capitalizeRole(role)} running ${shortCommand(command)}`,
+      });
+    }
+  }
+
+  return events;
+}
+
+export const observableTurnEventsForTest = extractObservableTurnEvents;
 
 function validateDebuggerTurnResult(
   project: ProjectConfig,
@@ -617,18 +822,130 @@ async function appendControllerLog(
   result: ControllerTurnResult,
 ): Promise<void> {
   const artifactPath = result.report_path ?? result.handoff_report_path;
-  const line =
-    `${new Date().toISOString()} ` +
-    `iter=${iteration} role=${role} event=turn_completed status=${result.status} ` +
-    `artifact=${JSON.stringify(artifactPath ?? "")} ` +
-    `commit=${JSON.stringify(result.commit_sha ?? "")} ` +
-    `summary=${JSON.stringify(result.summary)}\n`;
+  await appendWatchEvent(projectRoot, {
+    kind: "turn_completed",
+    iteration,
+    role,
+    status: result.status,
+    artifactPath,
+    commitSha: result.commit_sha,
+    message: `${capitalizeRole(role)} finished iteration ${iteration} with status ${result.status}: ${result.summary}`,
+  });
+}
+
+async function appendWatchEventIfNew(
+  projectRoot: string,
+  event: WatchEventRecord,
+  seenKeys: Set<string>,
+): Promise<void> {
+  const key = [
+    event.kind,
+    event.iteration ?? "",
+    event.role ?? "",
+    event.threadId ?? "",
+    event.itemId ?? "",
+    event.status ?? "",
+    event.command ?? "",
+    event.artifactPath ?? "",
+    event.commitSha ?? "",
+    event.message,
+  ].join("|");
+  if (seenKeys.has(key)) {
+    return;
+  }
+  seenKeys.add(key);
+  await appendWatchEvent(projectRoot, event);
+}
+
+async function appendWatchEvent(
+  projectRoot: string,
+  event: Omit<WatchEventRecord, "version" | "at"> & Partial<Pick<WatchEventRecord, "version" | "at">>,
+): Promise<void> {
+  const record: WatchEventRecord = {
+    version: 1,
+    at: new Date().toISOString(),
+    ...event,
+  };
+  await fs.appendFile(
+    await resolveWatchEventsPath(projectRoot),
+    `${JSON.stringify(record)}\n`,
+    "utf8",
+  );
+  const line = formatControllerLogLine(record);
   await fs.appendFile(await resolveControllerLogPath(projectRoot), line, "utf8");
 }
 
-async function appendControllerEvent(projectRoot: string, details: string): Promise<void> {
-  const line = `${new Date().toISOString()} ${details}\n`;
-  await fs.appendFile(await resolveControllerLogPath(projectRoot), line, "utf8");
+function formatControllerLogLine(event: WatchEventRecord): string {
+  const fields = [
+    event.iteration ? `iter=${event.iteration}` : "",
+    event.role ? `role=${event.role}` : "",
+    `event=${event.kind}`,
+    event.status ? `status=${event.status}` : "",
+    event.artifactPath ? `artifact=${JSON.stringify(event.artifactPath)}` : "",
+    event.commitSha ? `commit=${JSON.stringify(event.commitSha)}` : "",
+    event.command ? `command=${JSON.stringify(event.command)}` : "",
+    `message=${JSON.stringify(event.message)}`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return `${event.at} ${fields}\n`;
+}
+
+function extractItemText(item: ThreadItemLike): string {
+  if (item.text) {
+    return item.text;
+  }
+
+  if (!item.content) {
+    return "";
+  }
+
+  return item.content
+    .map((entry) => entry.text ?? "")
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function previewOutput(text?: string): string | undefined {
+  if (!text) {
+    return undefined;
+  }
+
+  const normalized = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 4)
+    .join(" | ");
+  return normalized.length <= 320 ? normalized : `${normalized.slice(0, 317)}...`;
+}
+
+function shortCommand(command?: string): string {
+  if (!command) {
+    return "command";
+  }
+
+  return command.length <= 72 ? command : `${command.slice(0, 69)}...`;
+}
+
+function normalizeMessage(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function looksLikeJsonObject(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.startsWith("{") && trimmed.endsWith("}");
+}
+
+function capitalizeRole(role: RoleKind): string {
+  return `${role.slice(0, 1).toUpperCase()}${role.slice(1)}`;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function validateRunnableProject(project: ProjectConfig): void {

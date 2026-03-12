@@ -68,6 +68,9 @@ test("createProjectFiles writes spec, config, and runtime", async () => {
   assert.deepEqual(loadedRuntime.launch, {});
   assert.equal(loadedRuntime.loop.status, "idle");
 
+  const gitignore = await fs.readFile(path.join(projectRoot, ".gitignore"), "utf8");
+  assert.match(gitignore, /\.devise\/watch-events\.jsonl/);
+
   assert.equal(await exists(projectConfigPath(projectRoot)), true);
   assert.equal(await exists(runtimeStatePath(projectRoot)), true);
 });

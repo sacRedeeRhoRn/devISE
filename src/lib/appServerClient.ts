@@ -50,6 +50,33 @@ interface CodexAppServerClientOptions {
   spawnImpl?: SpawnAppServerProcess;
 }
 
+export interface ThreadItemContentLike {
+  type?: string;
+  text?: string;
+}
+
+export interface ThreadItemLike {
+  id: string;
+  type: string;
+  status?: string;
+  text?: string;
+  command?: string;
+  cwd?: string;
+  aggregatedOutput?: string;
+  exitCode?: number;
+  durationMs?: number;
+  content?: ThreadItemContentLike[];
+}
+
+export interface ThreadTurnLike {
+  id: string;
+  status: string;
+  startedAt?: string;
+  completedAt?: string;
+  items: ThreadItemLike[];
+  error?: unknown;
+}
+
 export interface ThreadLike {
   id: string;
   preview: string;
@@ -58,12 +85,10 @@ export interface ThreadLike {
   source: string;
   name: string | null;
   agentRole: string | null;
-  turns: Array<{
-    id: string;
-    status: string;
-    items: Array<{ type: string; text?: string }>;
-    error?: unknown;
-  }>;
+  status?: {
+    type?: string;
+  };
+  turns: ThreadTurnLike[];
 }
 
 export class CodexAppServerClient extends EventEmitter {

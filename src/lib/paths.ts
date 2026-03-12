@@ -108,6 +108,14 @@ export function legacyControllerLogPath(projectRoot: string): string {
   return path.join(legacyProjectStateDir(projectRoot), "controller.log");
 }
 
+export function watchEventsPath(projectRoot: string): string {
+  return path.join(projectStateDir(projectRoot), "watch-events.jsonl");
+}
+
+export function legacyWatchEventsPath(projectRoot: string): string {
+  return path.join(legacyProjectStateDir(projectRoot), "watch-events.jsonl");
+}
+
 export function specPath(projectRoot: string): string {
   return path.join(projectRoot, "PROJECT_SPEC.md");
 }

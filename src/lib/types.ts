@@ -67,6 +67,37 @@ export interface IterationRecord {
   at: string;
 }
 
+export type WatchEventKind =
+  | "loop_started"
+  | "loop_completed"
+  | "loop_blocked"
+  | "loop_failed"
+  | "turn_started"
+  | "turn_completed"
+  | "turn_status"
+  | "commentary"
+  | "command_started"
+  | "command_finished"
+  | "artifact_written"
+  | "commit_recorded";
+
+export interface WatchEventRecord {
+  version: 1;
+  at: string;
+  kind: WatchEventKind;
+  message: string;
+  iteration?: number;
+  role?: RoleKind;
+  status?: string;
+  threadId?: string;
+  itemId?: string;
+  itemType?: string;
+  command?: string;
+  outputPreview?: string;
+  artifactPath?: string;
+  commitSha?: string;
+}
+
 export interface LaunchState {
   stagedStartRole?: RoleKind;
   stagedTask?: string;

@@ -17,6 +17,7 @@ node dist/src/cli.js doctor
 - `/devise` prompt alias
 - `/devise-flight` launch prompt
 - `/devise-land` landing prompt
+- `devISE watch` terminal monitor
 - `role.*` MCP tools for compatibility
 - `devise.*` MCP tools as the current namespace
 - `role-project-planner` and `devise-project-planner` skill installs
@@ -43,6 +44,7 @@ Behavior:
 - `/devise-flight` is the only prompt that starts the automatic loop from the staged start role and task.
 - `/devise-land` stops the running loop if needed and clears the staged launch while keeping role assignments.
 - Once `/devise-flight` starts the loop, the controller alternates the two roles automatically until the project goal is met, blocked, failed, or manually landed.
+- `devISE watch <project>` opens the editorial PTY monitor with the role timeline, live observable activity feed, latest handoffs, and controller state.
 
 `/devise` is kept as an alias, but `/role` should be treated as the primary entrypoint.
 
@@ -68,6 +70,7 @@ Each managed project stores a command contract under `.devise/` or legacy `.code
 - `node dist/src/cli.js stage-launch --project-root <path> --start-role <developer|debugger> --task <text>`
 - `node dist/src/cli.js flight --project-root <path>`
 - `node dist/src/cli.js land --project-root <path>`
+- `node dist/src/cli.js watch [project-id|project-root]`
 - `node dist/src/cli.js serve`
 - `node dist/src/cli.js run-loop --project-root <path> --start-role <developer|debugger> --task <text>` (internal controller entrypoint)
 
@@ -75,4 +78,5 @@ Each managed project stores a command contract under `.devise/` or legacy `.code
 
 - Existing `.codex-role` projects and `role.*` tool names are still supported.
 - `status` accepts either a project root or a registered project id.
+- The watcher shows observable progress only: role commentary, command activity, handoff/report excerpts, commits, and loop events. It does not expose hidden chain-of-thought.
 - Landing keeps role assignments but clears the staged launch, so the next automatic run must be re-armed from `/role`.

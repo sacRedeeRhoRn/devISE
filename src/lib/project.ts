@@ -11,10 +11,12 @@ import {
   legacyProjectConfigPath,
   legacyProjectStateDir,
   legacyRuntimeStatePath,
+  legacyWatchEventsPath,
   projectConfigPath,
   projectStateDir,
   runtimeStatePath,
   specPath,
+  watchEventsPath,
 } from "./paths.js";
 import type {
   CreateProjectInput,
@@ -129,6 +131,7 @@ export async function createProjectFiles(
     ".devise/runtime.json",
     ".devise/artifacts/",
     ".devise/controller.log",
+    ".devise/watch-events.jsonl",
   ]);
 
   return { project, runtime };
@@ -263,6 +266,21 @@ export async function resolveControllerLogPath(projectRoot: string): Promise<str
   }
 
   const legacyPath = legacyControllerLogPath(resolvedRoot);
+  if (await pathExists(legacyPath)) {
+    return legacyPath;
+  }
+
+  return currentPath;
+}
+
+export async function resolveWatchEventsPath(projectRoot: string): Promise<string> {
+  const resolvedRoot = path.resolve(projectRoot);
+  const currentPath = watchEventsPath(resolvedRoot);
+  if (await pathExists(currentPath)) {
+    return currentPath;
+  }
+
+  const legacyPath = legacyWatchEventsPath(resolvedRoot);
   if (await pathExists(legacyPath)) {
     return legacyPath;
   }
