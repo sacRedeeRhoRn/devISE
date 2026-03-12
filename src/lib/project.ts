@@ -22,14 +22,26 @@ import {
   activeRolesForLoopKind,
   builderRoleForLoopKind,
   isRoleAllowedForLoopKind,
-  roleTitle,
   type CreateProjectInput,
   type LoopKind,
+  type PortfolioEntry,
   type ProjectConfig,
   type RoleConfig,
   type RoleKind,
   type RuntimeState,
+  roleTitle,
 } from "./types.js";
+import {
+  generateProjectCharter,
+  generateRoleConfig,
+  inferProjectDomain,
+  renderProjectCharter,
+  summarizePersona,
+} from "./persona.js";
+
+interface CreateProjectFilesOptions {
+  portfolio?: PortfolioEntry;
+}
 
 export function makeProjectId(projectRoot: string, explicitId?: string): string {
   if (explicitId) {
@@ -58,20 +70,33 @@ export function defaultBranchName(
 }
 
 export function defaultProjectConfig(input: CreateProjectInput): ProjectConfig {
+  return defaultProjectConfigWithPortfolio(input);
+}
+
+function defaultProjectConfigWithPortfolio(
+  input: CreateProjectInput,
+  portfolio?: PortfolioEntry,
+): ProjectConfig {
   const projectId = makeProjectId(input.projectRoot, input.projectId);
   const projectRoot = path.resolve(input.projectRoot);
+  const domain = inferProjectDomain(input, portfolio);
+  const charter = generateProjectCharter(input, domain, portfolio);
+  const bias = portfolio?.rolePersonaHints ?? {};
 
   if (input.loopKind === "scientist-modeller") {
     return {
-      version: 2,
+      version: 3,
+      kind: "managed_project",
       project: {
         id: projectId,
         root: projectRoot,
       },
       loop_kind: input.loopKind,
+      domain,
+      summary: charter.continuity_summary,
+      charter,
       goal: input.goal,
-      acceptance:
-        input.acceptance ?? ["Replace this placeholder with explicit scientific/model acceptance criteria."],
+      acceptance: charter.acceptance,
       commands: {
         setup: input.setupCommands ?? [],
         scientist_research:
@@ -96,28 +121,37 @@ export function defaultProjectConfig(input: CreateProjectInput): ProjectConfig {
         stagnation_limit: 2,
       },
       roles: {
-        scientist: makeRoleConfig(
+        scientist: generateRoleConfig(
+          "scientist",
+          charter,
           "Synthesizes evidence, frames hypotheses, assesses model fitness, and decides whether the goal is met.",
           input.scientistSpecialization,
+          bias.scientist,
         ),
-        modeller: makeRoleConfig(
+        modeller: generateRoleConfig(
+          "modeller",
+          charter,
           "Chooses methods and tools, designs the analytic model, and commits model updates for assessment.",
           input.modellerSpecialization,
+          bias.modeller,
         ),
       },
     };
   }
 
   return {
-    version: 2,
+    version: 3,
+    kind: "managed_project",
     project: {
       id: projectId,
       root: projectRoot,
     },
     loop_kind: input.loopKind,
+    domain,
+    summary: charter.continuity_summary,
+    charter,
     goal: input.goal,
-    acceptance:
-      input.acceptance ?? ["Replace this placeholder with explicit success criteria."],
+    acceptance: charter.acceptance,
     commands: {
       setup: input.setupCommands ?? [],
       dry_test:
@@ -142,13 +176,19 @@ export function defaultProjectConfig(input: CreateProjectInput): ProjectConfig {
       stagnation_limit: 2,
     },
     roles: {
-      developer: makeRoleConfig(
+      developer: generateRoleConfig(
+        "developer",
+        charter,
         "Patches code until dry-test passes and commits the result.",
         input.developerSpecialization,
+        bias.developer,
       ),
-      debugger: makeRoleConfig(
+      debugger: generateRoleConfig(
+        "debugger",
+        charter,
         "Runs the real use flow, writes a detailed report, and decides whether the goal is met.",
         input.debuggerSpecialization,
+        bias.debugger,
       ),
     },
   };
@@ -159,7 +199,7 @@ export function defaultRuntimeState(
   controllerThreadId?: string,
 ): RuntimeState {
   return {
-    version: 2,
+    version: projectConfig.version >= 3 ? 3 : 2,
     projectId: projectConfig.project.id,
     projectRoot: projectConfig.project.root,
     controllerThreadId,
@@ -175,9 +215,13 @@ export function defaultRuntimeState(
 
 export async function createProjectFiles(
   input: CreateProjectInput,
+  options: CreateProjectFilesOptions = {},
 ): Promise<{ project: ProjectConfig; runtime: RuntimeState }> {
   const root = path.resolve(input.projectRoot);
-  const project = defaultProjectConfig({ ...input, projectRoot: root });
+  const project = defaultProjectConfigWithPortfolio(
+    { ...input, projectRoot: root },
+    options.portfolio,
+  );
   const runtime = defaultRuntimeState(project, input.controllerThreadId);
 
   await ensureDir(root);
@@ -255,7 +299,8 @@ export function activeRolesForProject(project: ProjectConfig): readonly [RoleKin
 export function renderProjectSpec(project: ProjectConfig): string {
   const acceptance = project.acceptance.map((item) => `- ${item}`).join("\n");
   const setup = renderCommandSection(project.commands.setup);
-  const specializations = renderRoleSpecializations(project.roles);
+  const personas = renderRolePersonas(project.roles);
+  const charter = renderProjectCharter(project);
 
   if (project.loop_kind === "scientist-modeller") {
     const scientistResearch = renderCommandSection(project.commands.scientist_research);
@@ -268,17 +313,17 @@ export function renderProjectSpec(project: ProjectConfig): string {
 
 scientist-modeller
 
-## Goal
+## Project Charter
 
-${project.goal}
+${charter}
 
 ## Acceptance Criteria
 
 ${acceptance}
 
-## Role Specialization
+## Role Personas
 
-${specializations}
+${personas}
 
 ## Setup Commands
 
@@ -311,17 +356,17 @@ ${scientistAssess}
 
 developer-debugger
 
-## Goal
+## Project Charter
 
-${project.goal}
+${charter}
 
 ## Acceptance Criteria
 
 ${acceptance}
 
-## Role Specialization
+## Role Personas
 
-${specializations}
+${personas}
 
 ## Setup Commands
 
@@ -455,7 +500,7 @@ function normalizeRuntimeState(
   return {
     ...fallback,
     ...runtime,
-    version: 2,
+    version: project.version >= 3 ? 3 : 2,
     roles: runtime.roles ?? {},
     launch: {
       ...fallback.launch,
@@ -470,9 +515,9 @@ function normalizeRuntimeState(
 }
 
 function validateProjectConfig(project: ProjectConfig, configPath: string): void {
-  if (project?.version !== 2) {
+  if (project?.version !== 2 && project?.version !== 3) {
     throw new Error(
-      `Unsupported project config version at ${configPath}: expected version 2. Recreate or manually migrate this project.`,
+      `Unsupported project config version at ${configPath}: expected version 2 or 3. Recreate or manually migrate this project.`,
     );
   }
 
@@ -494,6 +539,36 @@ function validateProjectConfig(project: ProjectConfig, configPath: string): void
       throw new Error(
         `Invalid project config at ${configPath}: roles.${role}.description is required for ${project.loop_kind}`,
       );
+    }
+  }
+
+  if (project.version >= 3) {
+    if (project.kind !== "managed_project") {
+      throw new Error(`Invalid project config at ${configPath}: kind must be managed_project`);
+    }
+    if (!project.domain || !project.summary || !project.charter) {
+      throw new Error(
+        `Invalid project config at ${configPath}: version 3 projects require domain, summary, and charter`,
+      );
+    }
+    for (const role of activeRoles) {
+      const persona = project.roles[role]?.persona;
+      if (
+        !persona?.title ||
+        !persona.domain ||
+        !Array.isArray(persona.exemplars) ||
+        persona.exemplars.length === 0 ||
+        !Array.isArray(persona.methods) ||
+        persona.methods.length === 0 ||
+        !Array.isArray(persona.standards) ||
+        persona.standards.length === 0 ||
+        !persona.voice_brief ||
+        !persona.hidden_instructions
+      ) {
+        throw new Error(
+          `Invalid project config at ${configPath}: roles.${role}.persona is required and must be complete for version 3 projects`,
+        );
+      }
     }
   }
 
@@ -546,19 +621,20 @@ function renderBulletList(items?: string[]): string {
   return items.map((item) => `- ${item}`).join("\n");
 }
 
-function renderRoleSpecializations(roles: Partial<Record<RoleKind, RoleConfig>>): string {
+function renderRolePersonas(roles: Partial<Record<RoleKind, RoleConfig>>): string {
   const lines = Object.entries(roles).map(([role, config]) => {
-    const specialization = config?.specialization?.trim();
-    return specialization
-      ? `- ${roleTitle(role as RoleKind)}: ${specialization}`
-      : `- ${roleTitle(role as RoleKind)}: No additional specialization provided.`;
+    return `- ${roleTitle(role as RoleKind)}: ${summarizePersona(
+      config?.persona,
+      config?.specialization,
+    )}`;
   });
   return lines.length > 0 ? lines.join("\n") : "- None configured.";
 }
 
-function makeRoleConfig(description: string, specialization?: string): RoleConfig {
-  return {
-    description,
-    specialization: specialization?.trim() || undefined,
-  };
+export function projectTitle(project: ProjectConfig): string {
+  return project.charter?.title ?? project.goal;
+}
+
+export function projectDomain(project: ProjectConfig): string {
+  return project.charter?.domain ?? project.domain ?? "Unknown";
 }

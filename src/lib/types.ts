@@ -1,8 +1,10 @@
 export const ROLE_KINDS = ["developer", "debugger", "scientist", "modeller"] as const;
 export const LOOP_KINDS = ["developer-debugger", "scientist-modeller"] as const;
+export const REGISTRY_ENTRY_KINDS = ["managed_project", "portfolio"] as const;
 
 export type RoleKind = (typeof ROLE_KINDS)[number];
 export type LoopKind = (typeof LOOP_KINDS)[number];
+export type RegistryEntryKind = (typeof REGISTRY_ENTRY_KINDS)[number];
 export type LoopStatus =
   | "idle"
   | "running"
@@ -48,6 +50,27 @@ export interface CommandContract {
 export interface RoleConfig {
   description: string;
   specialization?: string;
+  persona?: RolePersona;
+}
+
+export interface ProjectCharter {
+  title: string;
+  domain: string;
+  objective: string;
+  acceptance: string[];
+  evidence_bar: string;
+  constraints: string[];
+  continuity_summary: string;
+}
+
+export interface RolePersona {
+  title: string;
+  domain: string;
+  exemplars: string[];
+  methods: string[];
+  standards: string[];
+  voice_brief: string;
+  hidden_instructions: string;
 }
 
 export interface LoopConfig {
@@ -61,13 +84,17 @@ export interface GitConfig {
 }
 
 export interface ProjectConfig {
-  version: 2;
+  version: 2 | 3;
+  kind?: "managed_project";
   project: {
     id: string;
     root: string;
   };
   loop_kind: LoopKind;
   goal: string;
+  domain?: string;
+  summary?: string;
+  charter?: ProjectCharter;
   acceptance: string[];
   commands: CommandContract;
   git: GitConfig;
@@ -132,7 +159,7 @@ export interface LaunchState {
 }
 
 export interface RuntimeState {
-  version: 2;
+  version: 2 | 3;
   projectId: string;
   projectRoot: string;
   controllerThreadId?: string;
@@ -154,16 +181,34 @@ export interface RuntimeState {
   history: IterationRecord[];
 }
 
-export interface RegistryEntry {
+interface RegistryEntryBase {
   id: string;
-  root: string;
+  kind: RegistryEntryKind;
   goal: string;
+  summary: string;
+  domain?: string;
   createdAt: string;
   updatedAt: string;
 }
 
+export interface ManagedProjectRegistryEntry extends RegistryEntryBase {
+  kind: "managed_project";
+  root: string;
+  parentId?: string;
+}
+
+export interface PortfolioEntry extends RegistryEntryBase {
+  kind: "portfolio";
+  title: string;
+  parentId?: undefined;
+  sharedContextSummary?: string;
+  rolePersonaHints?: Partial<Record<RoleKind, string>>;
+}
+
+export type RegistryEntry = ManagedProjectRegistryEntry | PortfolioEntry;
+
 export interface RegistryFile {
-  version: 1;
+  version: 2;
   projects: RegistryEntry[];
 }
 
@@ -171,6 +216,8 @@ export interface CreateProjectInput {
   projectRoot: string;
   loopKind: LoopKind;
   goal: string;
+  domain?: string;
+  headProjectId?: string;
   acceptance?: string[];
   dryTestCommands?: string[];
   restartCommands?: string[];
@@ -188,6 +235,18 @@ export interface CreateProjectInput {
   debuggerSpecialization?: string;
   scientistSpecialization?: string;
   modellerSpecialization?: string;
+}
+
+export interface CreatePortfolioInput {
+  portfolioId?: string;
+  title: string;
+  goal: string;
+  domain?: string;
+  summary?: string;
+  developerPersonaHint?: string;
+  debuggerPersonaHint?: string;
+  scientistPersonaHint?: string;
+  modellerPersonaHint?: string;
 }
 
 export interface SessionSummary {
@@ -217,6 +276,11 @@ export interface StageLaunchInput {
   projectRoot: string;
   startRole: RoleKind;
   task: string;
+}
+
+export interface MoveProjectInput {
+  projectSelector: string;
+  newHeadProjectId?: string | null;
 }
 
 export interface ControllerTurnResult {

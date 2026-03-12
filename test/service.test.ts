@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
 
 import { RoleService } from "../src/lib/service.js";
 import { createProjectFiles, loadRuntimeState, saveRuntimeState } from "../src/lib/project.js";
+import type { ThreadLike } from "../src/lib/appServerClient.js";
 import type { RoleKind } from "../src/lib/types.js";
 
 function makeService(options?: ConstructorParameters<typeof RoleService>[2]): RoleService {
@@ -196,6 +198,96 @@ test("getStatus marks dead running controllers as orphaned", async () => {
   assert.match(status.runtime.loop.lastError ?? "", /no longer alive|without an active pid/);
 });
 
+test("assignRole applies generated expert instructions and visible priming for v3 projects", async () => {
+  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-service-assign-"));
+  await createProjectFiles({
+    projectRoot,
+    loopKind: "scientist-modeller",
+    goal: "Refine the entropy production assessment workflow",
+    domain: "statistical thermodynamics",
+    acceptance: ["Scientist signs off with explicit evidence"],
+    scientistResearchCommands: ["python research.py"],
+    modellerDesignCommands: ["python model.py"],
+    scientistAssessCommands: ["python assess.py"],
+  });
+
+  const client = new FakeServiceClient();
+  const service = makeService({
+    createClient: () => client as never,
+  });
+
+  const runtime = await service.assignRole({
+    projectRoot,
+    role: "scientist",
+    mode: "current",
+    currentThreadId: "existing-thread",
+  });
+
+  assert.equal(runtime.roles.scientist?.threadId, "existing-thread");
+  const resumeInstructions = String(client.resumeParams?.developerInstructions ?? "");
+  assert.match(resumeInstructions, /Boltzmann|Prigogine|Gibbs/);
+  assert.match(resumeInstructions, /Managed charter/);
+  assert.equal(client.turnInputs.length, 1);
+  assert.match(client.turnInputs[0] ?? "", /standing by/);
+});
+
+test("portfolio defaults are copied into new child projects and moveProject only changes registry linkage", async () => {
+  const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "devise-home-"));
+  const originalHome = process.env.HOME;
+  process.env.HOME = tmpHome;
+
+  try {
+    const service = makeService();
+    const portfolio = await service.createPortfolio({
+      title: "Thermo Portfolio",
+      goal: "Coordinate non-equilibrium transport programs",
+      domain: "statistical thermodynamics",
+      scientistPersonaHint: "prioritize non-equilibrium rigor",
+    });
+    const otherPortfolio = await service.createPortfolio({
+      title: "Alt Portfolio",
+      goal: "Alternative parent",
+    });
+
+    const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-service-portfolio-project-"));
+    const project = await service.createProject({
+      projectRoot,
+      loopKind: "scientist-modeller",
+      headProjectId: portfolio.id,
+      goal: "Characterize entropy production under driven transport",
+      acceptance: ["Scientist accepts the final model"],
+      scientistResearchCommands: ["python research.py"],
+      modellerDesignCommands: ["python model.py"],
+      scientistAssessCommands: ["python assess.py"],
+    });
+
+    assert.equal(project.charter?.domain, "Statistical Thermodynamics");
+    assert.match(project.roles.scientist?.persona?.methods.join(" | ") ?? "", /non-equilibrium rigor/);
+
+    const moved = await service.moveProject({
+      projectSelector: project.project.id,
+      newHeadProjectId: otherPortfolio.id,
+    });
+    assert.equal(moved.parentId, otherPortfolio.id);
+
+    const detached = await service.moveProject({
+      projectSelector: project.project.id,
+      newHeadProjectId: null,
+    });
+    assert.equal(detached.parentId, undefined);
+
+    const reloaded = await service.getStatus(project.project.root);
+    assert.equal(reloaded.project.charter?.domain, "Statistical Thermodynamics");
+  } finally {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    await fs.rm(tmpHome, { recursive: true, force: true });
+  }
+});
+
 async function assignActiveRoles(
   projectRoot: string,
   loopKind: "developer-debugger" | "scientist-modeller",
@@ -219,4 +311,63 @@ function makeRoleSession(role: RoleKind) {
     sourceMode: "current" as const,
     assignedAt: new Date().toISOString(),
   };
+}
+
+class FakeServiceClient extends EventEmitter {
+  resumeParams?: Record<string, unknown>;
+  turnInputs: string[] = [];
+  private readonly thread: ThreadLike = {
+    id: "existing-thread",
+    preview: "assigned thread",
+    updatedAt: 0,
+    cwd: process.cwd(),
+    source: "cli",
+    name: null,
+    agentRole: null,
+    turns: [],
+  };
+
+  async connect(): Promise<void> {}
+
+  async close(): Promise<void> {}
+
+  async resumeThread(params: Record<string, unknown>): Promise<ThreadLike> {
+    this.resumeParams = params;
+    return this.thread;
+  }
+
+  async forkThread(_params: Record<string, unknown>): Promise<ThreadLike> {
+    return this.thread;
+  }
+
+  async setThreadName(threadId: string, name: string): Promise<void> {
+    this.thread.id = threadId;
+    this.thread.name = name;
+  }
+
+  async readThread(_threadId: string, _includeTurns = true): Promise<ThreadLike> {
+    return this.thread;
+  }
+
+  async startTurn(params: Record<string, unknown>): Promise<void> {
+    const input = (params.input as Array<{ text?: string }> | undefined) ?? [];
+    this.turnInputs.push(input[0]?.text ?? "");
+    this.thread.turns.push({
+      id: `turn-${this.thread.turns.length + 1}`,
+      status: "completed",
+      items: [
+        {
+          id: `item-${this.thread.turns.length + 1}`,
+          type: "agentMessage",
+          text: "Primed and standing by.",
+        },
+      ],
+    });
+  }
+
+  async waitForTurnCompletion(
+    _threadId: string,
+    _timeoutMs = 0,
+    _priorTurnCount = 0,
+  ): Promise<void> {}
 }

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { buildWatchModel, parseControllerLogFallback, parseWatchEventsText } from "../src/lib/watch.js";
-import type { RuntimeState, WatchEventRecord } from "../src/lib/types.js";
+import type { ProjectConfig, RuntimeState, WatchEventRecord } from "../src/lib/types.js";
 
 test("parseWatchEventsText keeps structured events in chronological order", () => {
   const events = parseWatchEventsText(
@@ -41,8 +41,70 @@ test("parseControllerLogFallback detects all role names", () => {
 });
 
 test("buildWatchModel prioritizes live feed, timeline, and active role snapshots", () => {
+  const project: ProjectConfig = {
+    version: 3,
+    kind: "managed_project",
+    project: {
+      id: "demo",
+      root: "/tmp/demo",
+    },
+    loop_kind: "scientist-modeller",
+    goal: "Refine the analytic transport model",
+    domain: "Quantum Transport",
+    summary: "A quantum transport modelling program with a scientist-led acceptance gate.",
+    charter: {
+      title: "Refine the analytic transport model",
+      domain: "Quantum Transport",
+      objective: "Refine the analytic transport model",
+      acceptance: ["Scientist accepts the model"],
+      evidence_bar: "Acceptance requires explicit parity and runtime evidence.",
+      constraints: ["Track model assumptions."],
+      continuity_summary: "Scientist drives acceptance and modeller iterates until the evidence bar is met.",
+    },
+    acceptance: ["Scientist accepts the model"],
+    commands: {
+      scientist_research: ["python research.py"],
+      modeller_design: ["python model.py"],
+      scientist_assess: ["python assess.py"],
+    },
+    git: {
+      role_branch: "devise/demo/modeller",
+      commit_message_template: "role(demo): modeller iteration {{iteration}}",
+    },
+    loop: {
+      max_iterations: 10,
+      stagnation_limit: 2,
+    },
+    roles: {
+      scientist: {
+        description: "Assess model fitness.",
+        persona: {
+          title: "Principal Research Scientist for Quantum Transport",
+          domain: "Quantum Transport",
+          exemplars: ["Rolf Landauer", "Philip W. Anderson", "Sujit Datta"],
+          methods: ["test physical regime assumptions"],
+          standards: ["Demand explicit evidence"],
+          voice_brief: "Skeptical and evidence-driven.",
+          hidden_instructions: "Operate as the scientist gate.",
+        },
+      },
+      modeller: {
+        description: "Design the model.",
+        persona: {
+          title: "Principal Analytical Modeller for Quantum Transport",
+          domain: "Quantum Transport",
+          exemplars: ["Markus Buttiker", "David Thouless", "Rolf Landauer"],
+          methods: ["encode transport equations explicitly"],
+          standards: ["State assumptions plainly"],
+          voice_brief: "Structured and mathematically careful.",
+          hidden_instructions: "Operate as the modeller.",
+        },
+      },
+    },
+  };
+
   const runtime: RuntimeState = {
-    version: 2,
+    version: 3,
     projectId: "demo",
     projectRoot: "/tmp/demo",
     roles: {
@@ -95,6 +157,7 @@ test("buildWatchModel prioritizes live feed, timeline, and active role snapshots
     {
       projectId: "demo",
       projectRoot: "/tmp/demo",
+      project,
       runtime,
       roleA: "scientist",
       roleB: "modeller",
@@ -127,9 +190,11 @@ test("buildWatchModel prioritizes live feed, timeline, and active role snapshots
   );
 
   assert.equal(model.activeRole, "modeller");
+  assert.equal(model.projectDomain, "Quantum Transport");
   assert.equal(model.timeline.length, 3);
   assert.equal(model.feed.length, 2);
   assert.match(model.feed[0]?.detail ?? "", /acceptance bar/);
   assert.equal(model.roleA.artifactName, "scientist-assessment.md");
   assert.equal(model.roleB.artifactName, "modeller-design-report.md");
+  assert.match(model.roleA.personaSummary, /Landauer|Anderson|Datta/);
 });

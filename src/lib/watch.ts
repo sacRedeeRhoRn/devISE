@@ -3,9 +3,10 @@ import path from "node:path";
 import blessed from "blessed";
 
 import { readTextIfExists } from "./fs.js";
-import { activeRolesForProject } from "./project.js";
+import { activeRolesForProject, projectDomain, projectTitle } from "./project.js";
 import { resolveControllerLogPath, resolveWatchEventsPath } from "./project.js";
 import type { RoleService } from "./service.js";
+import { summarizeRolePersona } from "./persona.js";
 import { roleTitle, type IterationRecord, type ProjectConfig, type RoleKind, type RuntimeState, type WatchEventRecord } from "./types.js";
 
 type PaneMode = "timeline" | "feed" | "roleA" | "roleB";
@@ -14,6 +15,7 @@ type Tone = "developer" | "debugger" | "scientist" | "modeller" | "ok" | "warn" 
 interface MonitorSnapshot {
   projectId: string;
   projectRoot: string;
+  project: ProjectConfig;
   runtime: RuntimeState;
   roleA: RoleKind;
   roleB: RoleKind;
@@ -44,6 +46,7 @@ interface WatchRolePanel {
   title: string;
   tone: Tone;
   threadId: string;
+  personaSummary: string;
   latestLabel: string;
   artifactName: string;
   commitSha: string;
@@ -55,6 +58,9 @@ interface WatchRolePanel {
 interface WatchModel {
   projectId: string;
   projectRoot: string;
+  projectTitle: string;
+  projectDomain: string;
+  projectSummary: string;
   loopStatus: string;
   iteration: number;
   controllerAlive: boolean;
@@ -270,6 +276,7 @@ export async function buildSnapshot(
   return {
     projectId: runtime.projectId,
     projectRoot: runtime.projectRoot,
+    project,
     runtime,
     roleA,
     roleB,
@@ -349,6 +356,9 @@ export function buildWatchModel(snapshot: MonitorSnapshot, spinnerIndex: number)
   return {
     projectId: snapshot.projectId,
     projectRoot: snapshot.projectRoot,
+    projectTitle: projectTitle(snapshot.project),
+    projectDomain: projectDomain(snapshot.project),
+    projectSummary: snapshot.project.summary ?? snapshot.project.charter?.continuity_summary ?? snapshot.project.goal,
     loopStatus: snapshot.runtime.loop.status,
     iteration: snapshot.runtime.loop.iteration,
     controllerAlive: snapshot.controllerAlive,
@@ -357,8 +367,8 @@ export function buildWatchModel(snapshot: MonitorSnapshot, spinnerIndex: number)
     headerNote: activity,
     timeline,
     feed,
-    roleA: buildRolePanel(snapshot.runtime, snapshot.roleARecord, snapshot.roleAPreview, snapshot.roleA),
-    roleB: buildRolePanel(snapshot.runtime, snapshot.roleBRecord, snapshot.roleBPreview, snapshot.roleB),
+    roleA: buildRolePanel(snapshot.project, snapshot.runtime, snapshot.roleARecord, snapshot.roleAPreview, snapshot.roleA),
+    roleB: buildRolePanel(snapshot.project, snapshot.runtime, snapshot.roleBRecord, snapshot.roleBPreview, snapshot.roleB),
   };
 }
 
@@ -585,12 +595,13 @@ function renderHeader(model: WatchModel): string {
   const controllerTone = toneTag(model.controllerAlive ? "ok" : "err");
 
   return [
-    `${statusTone}{bold}devISE watch{/bold}{/} {white-fg}${escapeTags(model.projectId)}{/white-fg}`,
+    `${statusTone}{bold}devISE watch{/bold}{/} {white-fg}${escapeTags(model.projectTitle)}{/white-fg} {${THEME.muted}-fg}(${escapeTags(model.projectId)}){/}`,
     `${dim("loop")} ${statusTone}{bold}${escapeTags(model.loopStatus)}{/bold}{/}   ` +
       `${dim("iter")} {white-fg}${model.iteration}{/white-fg}   ` +
       `${dim("active")} ${activeTone}{bold}${escapeTags(model.activeRole)}{/bold}{/}   ` +
       `${dim("controller")} ${controllerTone}{bold}${model.controllerAlive ? "alive" : "stopped"}{/bold}{/}`,
-    `${dim("root")} ${escapeTags(model.projectRoot)}`,
+    `${dim("domain")} ${escapeTags(model.projectDomain)}   ${dim("root")} ${escapeTags(model.projectRoot)}`,
+    `${dim("charter")} ${escapeTags(model.projectSummary)}`,
     `${dim("task")} ${escapeTags(model.task)}\n${dim("note")} ${escapeTags(model.headerNote)}`,
   ].join("\n");
 }
@@ -599,6 +610,7 @@ function renderRolePanel(panel: WatchRolePanel): string {
   const tone = toneTag(panel.tone);
   return [
     `${dim("thread")} ${escapeTags(panel.threadId)}`,
+    `${dim("persona")} ${escapeTags(panel.personaSummary)}`,
     `${dim("latest")} ${tone}{bold}${escapeTags(panel.latestLabel)}{/bold}{/}`,
     `${dim("artifact")} ${escapeTags(panel.artifactName)}`,
     `${dim("commit")} ${escapeTags(panel.commitSha)}`,
@@ -732,6 +744,7 @@ function buildFeed(events: WatchEventRecord[]): WatchFeedItem[] {
 }
 
 function buildRolePanel(
+  project: ProjectConfig,
   runtime: RuntimeState,
   record: IterationRecord | undefined,
   preview: string[],
@@ -752,6 +765,7 @@ function buildRolePanel(
     title: capitalizeRole(role),
     tone: role,
     threadId,
+    personaSummary: summarizeRolePersona(project, role),
     latestLabel,
     artifactName,
     commitSha,
@@ -760,6 +774,7 @@ function buildRolePanel(
     detail: [
       `{bold}${capitalizeRole(role)} lane{/bold}`,
       `${dim("thread")} ${escapeTags(threadId)}`,
+      `${dim("persona")} ${escapeTags(summarizeRolePersona(project, role))}`,
       `${dim("latest")} ${escapeTags(latestLabel)}`,
       `${dim("artifact")} ${escapeTags(artifactName)}`,
       `${dim("commit")} ${escapeTags(commitSha)}`,
@@ -775,7 +790,8 @@ function buildRolePanel(
 
 function renderPlainSnapshot(model: WatchModel): string {
   return [
-    `project: ${model.projectId}`,
+    `project: ${model.projectTitle} (${model.projectId})`,
+    `domain: ${model.projectDomain}`,
     `root: ${model.projectRoot}`,
     `loop: ${model.loopStatus}`,
     `iteration: ${model.iteration}`,

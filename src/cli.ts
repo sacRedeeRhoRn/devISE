@@ -41,6 +41,10 @@ async function main(): Promise<void> {
       );
       console.log(`project: ${status.project.project.id}`);
       console.log(`root: ${status.project.project.root}`);
+      console.log(`title: ${status.project.charter?.title ?? status.project.goal}`);
+      console.log(`domain: ${status.project.charter?.domain ?? status.project.domain ?? "unknown"}`);
+      console.log(`project_kind: ${status.registryEntry?.kind ?? "managed_project"}`);
+      console.log(`parent_id: ${status.registryEntry?.kind === "managed_project" ? status.registryEntry.parentId ?? "none" : "none"}`);
       console.log(`loop_kind: ${status.project.loop_kind}`);
       console.log(`active_roles: ${activeRolesForLoopKind(status.project.loop_kind).join(", ")}`);
       console.log(`loop: ${status.runtime.loop.status}`);
@@ -56,6 +60,11 @@ async function main(): Promise<void> {
         if (status.runtime.roles[role]) {
           console.log(`${role}_thread: ${status.runtime.roles[role]?.threadId}`);
         }
+        const persona = status.project.roles[role]?.persona;
+        if (persona) {
+          console.log(`${role}_persona: ${persona.title}`);
+          console.log(`${role}_exemplars: ${persona.exemplars.join(", ")}`);
+        }
       }
       if (status.runtime.loop.lastReportPath) {
         console.log(`last_report: ${status.runtime.loop.lastReportPath}`);
@@ -66,6 +75,44 @@ async function main(): Promise<void> {
       if (status.runtime.loop.lastError) {
         console.log(`last_error: ${status.runtime.loop.lastError}`);
       }
+      return;
+    }
+
+    case "portfolio-create": {
+      const title = valueForFlag(rest, "--title");
+      const goal = valueForFlag(rest, "--goal");
+      if (!title || !goal) {
+        throw new Error(`portfolio-create requires --title and --goal`);
+      }
+      const entry = await service.createPortfolio({
+        portfolioId: valueForFlag(rest, "--id"),
+        title,
+        goal,
+        domain: valueForFlag(rest, "--domain"),
+        summary: valueForFlag(rest, "--summary"),
+        developerPersonaHint: valueForFlag(rest, "--developer-hint"),
+        debuggerPersonaHint: valueForFlag(rest, "--debugger-hint"),
+        scientistPersonaHint: valueForFlag(rest, "--scientist-hint"),
+        modellerPersonaHint: valueForFlag(rest, "--modeller-hint"),
+      });
+      console.log(`portfolio: ${entry.id}`);
+      console.log(`title: ${entry.title}`);
+      console.log(`domain: ${entry.domain ?? "none"}`);
+      return;
+    }
+
+    case "move-project": {
+      const projectSelector = valueForFlag(rest, "--project");
+      if (!projectSelector) {
+        throw new Error(`move-project requires --project`);
+      }
+      const parent = valueForFlag(rest, "--parent");
+      const moved = await service.moveProject({
+        projectSelector,
+        newHeadProjectId: !parent || parent === "none" ? null : parent,
+      });
+      console.log(`project: ${moved.id}`);
+      console.log(`parent_id: ${moved.parentId ?? "none"}`);
       return;
     }
 
@@ -163,6 +210,8 @@ function printUsage(): never {
   devISE install
   devISE doctor [project-root]
   devISE status [project-root]
+  devISE portfolio-create --title <title> --goal <goal> [--id <id>] [--domain <domain>] [--summary <text>] [--developer-hint <text>] [--debugger-hint <text>] [--scientist-hint <text>] [--modeller-hint <text>]
+  devISE move-project --project <project-id|project-root> [--parent <portfolio-id|none>]
   devISE stage-launch --project-root <path> --start-role <developer|debugger|scientist|modeller> --task <text>
   devISE flight --project-root <path>
   devISE land --project-root <path>

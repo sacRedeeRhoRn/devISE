@@ -9,6 +9,7 @@ import {
   type ThreadTurnLike,
 } from "./appServerClient.js";
 import { ensureDir, pathExists, readTextIfExists } from "./fs.js";
+import { buildManagedRoleInstructions, renderProjectCharter, summarizeRolePersona } from "./persona.js";
 import {
   repoRootFromModule,
   specPath,
@@ -307,7 +308,7 @@ async function hydrateRoleThreads(
         cwd: project.project.root,
         approvalPolicy: "never",
         sandbox: "danger-full-access",
-        developerInstructions: await loadRoleBaseInstructions(repoRoot, role),
+        developerInstructions: await loadRoleInstructions(repoRoot, project, role),
         persistExtendedHistory: true,
       });
       await client.setThreadName(assigned.threadId, assigned.threadName);
@@ -319,7 +320,7 @@ async function hydrateRoleThreads(
       cwd: project.project.root,
       approvalPolicy: "never",
       sandbox: "danger-full-access",
-      developerInstructions: await loadRoleBaseInstructions(repoRoot, role),
+      developerInstructions: await loadRoleInstructions(repoRoot, project, role),
       personality: "pragmatic",
       experimentalRawEvents: false,
       persistExtendedHistory: true,
@@ -362,7 +363,7 @@ async function runRoleTurn(
     cwd: project.project.root,
     approvalPolicy: "never",
     sandbox: "danger-full-access",
-    developerInstructions: await loadRoleBaseInstructions(repoRoot, role),
+    developerInstructions: await loadRoleInstructions(repoRoot, project, role),
     persistExtendedHistory: true,
   });
   const priorThread = await client.readThread(roleSession.threadId, true);
@@ -464,7 +465,7 @@ async function buildRoleTurnPrompt(
   artifactPath: string,
   counterpartArtifact?: string,
 ): Promise<string> {
-  const roleInstructions = await loadRoleBaseInstructions(repoRoot, role);
+  const roleInstructions = await loadRoleInstructions(repoRoot, project, role);
   const counterpartSummary =
     counterpartArtifact && (await pathExists(counterpartArtifact))
       ? await readTextIfExists(counterpartArtifact)
@@ -472,6 +473,7 @@ async function buildRoleTurnPrompt(
   const commandSections = renderRoleCommandSections(project, role);
   const projectConfig = await resolveProjectConfigPath(project.project.root);
   const specialization = project.roles[role]?.specialization?.trim() ?? "No additional specialization configured.";
+  const personaSummary = summarizeRolePersona(project, role);
   const activePair = activeRolesForProject(project).map(roleTitle).join(" -> ");
   const counterpartRoleName = roleTitle(counterpartRole(project, role));
   const roleDescription = project.roles[role]?.description ?? `${roleTitle(role)} role`;
@@ -488,11 +490,17 @@ Managed branch: ${project.git.role_branch}
 Goal:
 ${project.goal}
 
+Project charter:
+${renderProjectCharter(project)}
+
 Role mission:
 ${roleDescription}
 
 Project specialization for this role:
 ${specialization}
+
+Generated persona for this role:
+${personaSummary}
 
 User-requested task for this loop:
 ${runtime.loop.task ?? "No explicit user task was recorded."}
@@ -522,6 +530,15 @@ async function loadRoleBaseInstructions(
 ): Promise<string> {
   const rolePath = path.join(repoRoot, "assets", "roles", `${role}.md`);
   return fs.readFile(rolePath, "utf8");
+}
+
+async function loadRoleInstructions(
+  repoRoot: string,
+  project: ProjectConfig,
+  role: RoleKind,
+): Promise<string> {
+  const base = await loadRoleBaseInstructions(repoRoot, role);
+  return buildManagedRoleInstructions(base, project, role);
 }
 
 function renderCommandList(commands?: string[]): string {

@@ -36,6 +36,8 @@ function registerWorkflowNamespace(
         projectRoot: z.string(),
         loopKind: z.enum(LOOP_KINDS),
         goal: z.string(),
+        domain: z.string().optional(),
+        headProjectId: z.string().optional(),
         acceptance: z.array(z.string()).optional(),
         dryTestCommands: z.array(z.string()).optional(),
         restartCommands: z.array(z.string()).optional(),
@@ -61,10 +63,41 @@ function registerWorkflowNamespace(
         content: [
           {
             type: "text",
-            text: `Created project ${project.project.id} at ${project.project.root}`,
+            text: `Created project ${project.project.id} at ${project.project.root} in domain ${project.charter?.domain ?? project.domain ?? "unknown"}`,
           },
         ],
         structuredContent: structured(project),
+      };
+    },
+  );
+
+  server.registerTool(
+    `${namespace}.create_portfolio`,
+    {
+      description:
+        "Create a non-runnable devISE portfolio container with shared domain and persona-bias defaults.",
+      inputSchema: {
+        portfolioId: z.string().optional(),
+        title: z.string(),
+        goal: z.string(),
+        domain: z.string().optional(),
+        summary: z.string().optional(),
+        developerPersonaHint: z.string().optional(),
+        debuggerPersonaHint: z.string().optional(),
+        scientistPersonaHint: z.string().optional(),
+        modellerPersonaHint: z.string().optional(),
+      },
+    },
+    async (input) => {
+      const portfolio = await service.createPortfolio(input);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Created portfolio ${portfolio.id}${portfolio.domain ? ` in ${portfolio.domain}` : ""}`,
+          },
+        ],
+        structuredContent: structured({ portfolio }),
       };
     },
   );
@@ -87,6 +120,29 @@ function registerWorkflowNamespace(
           },
         ],
         structuredContent: structured({ projects }),
+      };
+    },
+  );
+
+  server.registerTool(
+    `${namespace}.move_project`,
+    {
+      description: "Logically move a managed project under a different portfolio or back to top-level.",
+      inputSchema: {
+        projectSelector: z.string(),
+        newHeadProjectId: z.string().nullable().optional(),
+      },
+    },
+    async ({ projectSelector, newHeadProjectId }) => {
+      const entry = await service.moveProject({ projectSelector, newHeadProjectId });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Moved project ${entry.id} to parent ${entry.parentId ?? "none"}`,
+          },
+        ],
+        structuredContent: structured({ entry }),
       };
     },
   );
@@ -239,7 +295,7 @@ function registerWorkflowNamespace(
         content: [
           {
             type: "text",
-            text: `Project ${status.project.project.id}: kind=${status.project.loop_kind} loop=${status.runtime.loop.status} armed=${armed}`,
+            text: `Project ${status.project.project.id}: kind=${status.registryEntry?.kind ?? "managed_project"} loop=${status.runtime.loop.status} armed=${armed} domain=${status.project.charter?.domain ?? status.project.domain ?? "unknown"}`,
           },
         ],
         structuredContent: structured(status),

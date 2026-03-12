@@ -1,9 +1,11 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 
 import { CodexAppServerClient, type ThreadLike } from "./appServerClient.js";
 import { runLoop, managedThreadName, spawnLoopProcess } from "./controller.js";
 import { doctor as runDoctor, installAssets } from "./install.js";
 import { ensureDir } from "./fs.js";
+import { buildManagedRoleInstructions, buildRoleAssignmentPrime } from "./persona.js";
 import { registryPath } from "./paths.js";
 import {
   activeRolesForProject,
@@ -16,14 +18,23 @@ import {
   resolveRuntimeStatePath,
   saveRuntimeState,
 } from "./project.js";
-import { loadRegistry, upsertRegistryEntry } from "./registry.js";
+import {
+  createPortfolioEntry,
+  findRegistryEntryById,
+  loadRegistry,
+  moveManagedProject,
+  upsertRegistryEntry,
+} from "./registry.js";
 import type { InstallResult } from "./install.js";
 import {
   allowedStartRolesForLoopKind,
   type AssignmentInput,
+  type CreatePortfolioInput,
   type CreateProjectInput,
   type LoopStartInput,
+  type MoveProjectInput,
   type ProjectConfig,
+  type RegistryEntry,
   type RuntimeState,
   type SessionSummary,
   type StageLaunchInput,
@@ -32,6 +43,7 @@ import {
 
 interface RoleServiceOptions {
   spawnLoop?: typeof spawnLoopProcess;
+  createClient?: () => CodexAppServerClient;
 }
 
 export class RoleService {
@@ -40,6 +52,10 @@ export class RoleService {
     private readonly cliEntrypoint: string,
     private readonly options: RoleServiceOptions = {},
   ) {}
+
+  private newClient(): CodexAppServerClient {
+    return this.options.createClient?.() ?? new CodexAppServerClient();
+  }
 
   async install(): Promise<InstallResult> {
     return installAssets(this.repoRoot, this.cliEntrypoint);
@@ -64,15 +80,37 @@ export class RoleService {
       throw new Error(`Project already exists at ${root}`);
     }
 
-    const { project } = await createProjectFiles({ ...input, projectRoot: root });
-    await upsertRegistryEntry(project);
+    let portfolio;
+    if (input.headProjectId) {
+      const entry = await findRegistryEntryById(input.headProjectId);
+      if (!entry) {
+        throw new Error(`Portfolio ${input.headProjectId} was not found`);
+      }
+      if (entry.kind !== "portfolio") {
+        throw new Error(`${input.headProjectId} is not a portfolio`);
+      }
+      portfolio = entry;
+    }
+
+    const { project } = await createProjectFiles(
+      { ...input, projectRoot: root },
+      { portfolio },
+    );
+    await upsertRegistryEntry(project, input.headProjectId);
     return project;
+  }
+
+  async createPortfolio(input: CreatePortfolioInput) {
+    return createPortfolioEntry(input);
   }
 
   async listProjects(): Promise<ProjectConfig[]> {
     const registry = await loadRegistry();
     const projects: ProjectConfig[] = [];
     for (const entry of registry.projects) {
+      if (entry.kind !== "managed_project") {
+        continue;
+      }
       if (!(await hasManagedProjectConfig(entry.root))) {
         continue;
       }
@@ -94,7 +132,7 @@ export class RoleService {
     projectRoot: string,
     limit = 10,
   ): Promise<SessionSummary[]> {
-    const client = new CodexAppServerClient();
+    const client = this.newClient();
     try {
       const threads = await client.listThreads({
         cwd: path.resolve(projectRoot),
@@ -114,9 +152,10 @@ export class RoleService {
     const project = await loadProjectConfig(projectRoot);
     const runtime = await loadRuntimeState(projectRoot);
     ensureRoleAllowedForProject(project, input.role);
-    const client = new CodexAppServerClient();
+    const client = this.newClient();
 
     try {
+      const developerInstructions = await this.roleInstructions(project, input.role);
       let thread: ThreadLike;
       if (input.mode === "current") {
         const currentThreadId =
@@ -130,6 +169,7 @@ export class RoleService {
           cwd: project.project.root,
           approvalPolicy: "never",
           sandbox: "danger-full-access",
+          developerInstructions,
           persistExtendedHistory: true,
         });
       } else {
@@ -142,6 +182,7 @@ export class RoleService {
           cwd: project.project.root,
           approvalPolicy: "never",
           sandbox: "danger-full-access",
+          developerInstructions,
           persistExtendedHistory: true,
         });
       }
@@ -157,10 +198,17 @@ export class RoleService {
         assignedAt: new Date().toISOString(),
       };
       await saveRuntimeState(runtime);
+      await this.primeAssignedRole(client, project, thread.id, input.role);
       return runtime;
     } finally {
       await client.close();
     }
+  }
+
+  async moveProject(input: MoveProjectInput) {
+    const root = await this.resolveProjectSelector(input.projectSelector);
+    const project = await loadProjectConfig(root);
+    return moveManagedProject(project.project.id, input.newHeadProjectId);
   }
 
   async stageLaunch(input: StageLaunchInput): Promise<RuntimeState> {
@@ -258,6 +306,7 @@ export class RoleService {
     project: ProjectConfig;
     runtime: RuntimeState;
     controllerAlive: boolean;
+    registryEntry?: RegistryEntry;
   }> {
     const resolvedRoot = await this.resolveProjectSelector(projectRoot);
     const project = await loadProjectConfig(resolvedRoot);
@@ -266,10 +315,12 @@ export class RoleService {
     if (runtime.loop.status === "orphaned" && !controllerAlive) {
       await saveRuntimeState(runtime);
     }
+    const registryEntry = await findRegistryEntryById(project.project.id);
     return {
       project,
       runtime,
       controllerAlive,
+      registryEntry,
     };
   }
 
@@ -286,12 +337,52 @@ export class RoleService {
     }
 
     const registry = await loadRegistry();
-    const match = registry.projects.find((entry) => entry.id === selector);
+    const match = registry.projects.find(
+      (entry): entry is Extract<RegistryEntry, { kind: "managed_project" }> =>
+        entry.kind === "managed_project" && entry.id === selector,
+    );
     if (match) {
       return match.root;
     }
 
     return resolved;
+  }
+
+  private async roleInstructions(project: ProjectConfig, role: RoleKind): Promise<string> {
+    const base = await fs.readFile(
+      path.join(this.repoRoot, "assets", "roles", `${role}.md`),
+      "utf8",
+    );
+    return buildManagedRoleInstructions(base, project, role);
+  }
+
+  private async primeAssignedRole(
+    client: CodexAppServerClient,
+    project: ProjectConfig,
+    threadId: string,
+    role: RoleKind,
+  ): Promise<void> {
+    const prime = buildRoleAssignmentPrime(project, role);
+    if (!prime) {
+      return;
+    }
+
+    const priorThread = await client.readThread(threadId, true);
+    const priorTurnCount = priorThread.turns.length;
+    await client.startTurn({
+      threadId,
+      input: [
+        {
+          type: "text",
+          text: prime,
+          text_elements: [],
+        },
+      ],
+      cwd: project.project.root,
+      approvalPolicy: "never",
+      personality: "pragmatic",
+    });
+    await client.waitForTurnCompletion(threadId, 5 * 60 * 1000, priorTurnCount);
   }
 }
 
