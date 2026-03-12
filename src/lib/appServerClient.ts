@@ -1,5 +1,9 @@
 import { EventEmitter } from "node:events";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  spawn,
+  type ChildProcessWithoutNullStreams,
+  type SpawnOptionsWithoutStdio,
+} from "node:child_process";
 import readline from "node:readline";
 
 type JsonRpcId = number;
@@ -33,6 +37,19 @@ type PendingRequest = {
   reject: (reason: Error) => void;
 };
 
+type SpawnAppServerProcess = (
+  command: string,
+  args: string[],
+  options: SpawnOptionsWithoutStdio,
+) => ChildProcessWithoutNullStreams;
+
+interface CodexAppServerClientOptions {
+  command?: string;
+  args?: string[];
+  env?: NodeJS.ProcessEnv;
+  spawnImpl?: SpawnAppServerProcess;
+}
+
 export interface ThreadLike {
   id: string;
   preview: string;
@@ -55,6 +72,11 @@ export class CodexAppServerClient extends EventEmitter {
   private pending = new Map<JsonRpcId, PendingRequest>();
   private ready = false;
   private connecting?: Promise<void>;
+  private closing = false;
+
+  constructor(private readonly options: CodexAppServerClientOptions = {}) {
+    super();
+  }
 
   async connect(): Promise<void> {
     if (this.ready) {
@@ -75,13 +97,31 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   async close(): Promise<void> {
-    if (!this.child) {
+    const child = this.child;
+    if (!child) {
+      this.ready = false;
       return;
     }
 
-    this.child.kill("SIGTERM");
+    this.closing = true;
+    if (child.exitCode === null && child.signalCode === null) {
+      await new Promise<void>((resolve) => {
+        const timeout = setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) {
+            child.kill("SIGKILL");
+          }
+        }, 1000);
+        child.once("exit", () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        child.kill("SIGTERM");
+      });
+    }
+
     this.child = undefined;
     this.ready = false;
+    this.closing = false;
   }
 
   async listThreads(params: Record<string, unknown>): Promise<ThreadLike[]> {
@@ -171,11 +211,17 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   private async initializeConnection(): Promise<void> {
-    this.child = spawn("codex", ["app-server", "--listen", "stdio://"], {
+    this.child = (this.options.spawnImpl ?? spawn)(
+      this.options.command ?? "codex",
+      this.options.args ?? ["app-server", "--listen", "stdio://"],
+      {
       stdio: ["pipe", "pipe", "pipe"],
-    });
+        env: this.options.env,
+      },
+    );
 
     this.child.on("exit", (code, signal) => {
+      const closing = this.closing;
       const error = new Error(
         `codex app-server exited unexpectedly (code=${code ?? "null"}, signal=${signal ?? "null"})`,
       );
@@ -183,8 +229,12 @@ export class CodexAppServerClient extends EventEmitter {
         pending.reject(error);
       }
       this.pending.clear();
+      this.child = undefined;
       this.ready = false;
-      this.emit("exit", error);
+      this.closing = false;
+      if (!closing) {
+        this.emit("exit", error);
+      }
     });
 
     const stdoutReader = readline.createInterface({ input: this.child.stdout });

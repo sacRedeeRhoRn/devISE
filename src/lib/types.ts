@@ -7,6 +7,7 @@ export type LoopStatus =
   | "completed"
   | "blocked"
   | "stopped"
+  | "orphaned"
   | "failed";
 
 export interface CommandContract {
@@ -76,6 +77,7 @@ export interface RuntimeState {
     status: LoopStatus;
     pid?: number;
     iteration: number;
+    task?: string;
     startedAt?: string;
     endedAt?: string;
     startRole?: RoleKind;
@@ -135,6 +137,7 @@ export interface AssignmentInput {
 export interface LoopStartInput {
   projectRoot: string;
   startRole: RoleKind;
+  task: string;
 }
 
 export interface ControllerTurnResult {

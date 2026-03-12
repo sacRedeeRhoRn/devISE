@@ -35,8 +35,12 @@ Behavior:
 
 - `/role create-project` creates the managed project spec and command contract.
 - `/role` defaults to resume for the current working directory.
-- Resume flow assigns either the current session or an older session to `developer` or `debugger`.
-- Once both roles are assigned, the workflow starts the managed loop.
+- Resume flow checks current status first, reuses any existing role assignments, and attaches any missing `developer` or `debugger` session.
+- After both roles are assigned, you provide:
+  the role that should take the next task first
+  the exact task that should seed the loop
+- The controller starts only after that explicit task seed.
+- Each role writes a detailed handoff artifact for the counterpart role, and the controller alternates between them until the project goal is met, blocked, orphaned, or stagnated.
 
 `/devise` is kept as an alias, but `/role` should be treated as the primary entrypoint.
 
@@ -60,7 +64,7 @@ Each managed project stores a command contract under `.devise/` or legacy `.code
 - `node dist/src/cli.js doctor`
 - `node dist/src/cli.js status <project-id>`
 - `node dist/src/cli.js serve`
-- `node dist/src/cli.js run-loop --project-root <path> --start-role <developer|debugger>`
+- `node dist/src/cli.js run-loop --project-root <path> --start-role <developer|debugger> --task <text>`
 
 ## Notes
 

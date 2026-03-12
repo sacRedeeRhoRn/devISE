@@ -38,9 +38,16 @@ async function main(): Promise<void> {
       console.log(`root: ${status.project.project.root}`);
       console.log(`loop: ${status.runtime.loop.status}`);
       console.log(`iteration: ${status.runtime.loop.iteration}`);
+      console.log(`task: ${status.runtime.loop.task ?? "none"}`);
       console.log(`pid: ${status.runtime.loop.pid ?? "none"}`);
       console.log(`controller_alive: ${status.controllerAlive}`);
       console.log(`roles: ${Object.keys(status.runtime.roles).join(", ") || "none"}`);
+      if (status.runtime.roles.developer) {
+        console.log(`developer_thread: ${status.runtime.roles.developer.threadId}`);
+      }
+      if (status.runtime.roles.debugger) {
+        console.log(`debugger_thread: ${status.runtime.roles.debugger.threadId}`);
+      }
       if (status.runtime.loop.lastReportPath) {
         console.log(`last_report: ${status.runtime.loop.lastReportPath}`);
       }
@@ -60,12 +67,14 @@ async function main(): Promise<void> {
     case "run-loop": {
       const projectRoot = valueForFlag(rest, "--project-root");
       const startRole = valueForFlag(rest, "--start-role");
-      if (!projectRoot || (startRole !== "developer" && startRole !== "debugger")) {
-        throw new Error(`run-loop requires --project-root and --start-role`);
+      const task = valueForFlag(rest, "--task");
+      if (!projectRoot || !task || (startRole !== "developer" && startRole !== "debugger")) {
+        throw new Error(`run-loop requires --project-root, --start-role, and --task`);
       }
       await service.runLoopForeground({
         projectRoot: path.resolve(projectRoot),
         startRole,
+        task,
       });
       return;
     }
@@ -89,7 +98,7 @@ function printUsage(): never {
   devISE doctor [project-root]
   devISE status [project-root]
   devISE serve
-  devISE run-loop --project-root <path> --start-role <developer|debugger>`);
+  devISE run-loop --project-root <path> --start-role <developer|debugger> --task <text>`);
   process.exit(1);
 }
 

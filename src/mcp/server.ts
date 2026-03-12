@@ -150,11 +150,12 @@ function registerWorkflowNamespace(
     },
     async (input) => {
       const runtime = await service.assignRole(input);
+      const assigned = runtime.roles[input.role];
       return {
         content: [
           {
             type: "text",
-            text: `Assigned ${input.role} for ${runtime.projectId}`,
+            text: `Assigned ${input.role} for ${runtime.projectId} to thread ${assigned?.threadId ?? "unknown"}`,
           },
         ],
         structuredContent: structured(runtime),
@@ -166,19 +167,20 @@ function registerWorkflowNamespace(
     `${namespace}.start_loop`,
     {
       description:
-        "Start the background developer/debugger loop for a managed project.",
+        "Start the background developer/debugger loop for a managed project using a specific user-requested task and starting role.",
       inputSchema: {
         projectRoot: z.string(),
         startRole: z.enum(["developer", "debugger"]),
+        task: z.string().min(1),
       },
     },
-    async (input) => {
-      const runtime = await service.startLoop(input);
+    async ({ projectRoot, startRole, task }) => {
+      const runtime = await service.startLoop({ projectRoot, startRole, task });
       return {
         content: [
           {
             type: "text",
-            text: `Started loop for ${runtime.projectId} with pid ${runtime.loop.pid}`,
+            text: `Started loop for ${runtime.projectId} with pid ${runtime.loop.pid} on ${startRole} for task: ${task}`,
           },
         ],
         structuredContent: structured(runtime),

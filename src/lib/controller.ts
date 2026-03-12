@@ -85,6 +85,8 @@ export async function spawnLoopProcess(
       input.projectRoot,
       "--start-role",
       input.startRole,
+      "--task",
+      input.task,
     ],
     {
       detached: true,
@@ -102,6 +104,7 @@ export async function runLoop(
   const project = await loadProjectConfig(input.projectRoot);
   const runtime = await loadRuntimeState(input.projectRoot);
   ensureRoleAssigned(runtime, input.startRole);
+  ensureRoleAssigned(runtime, input.startRole === "developer" ? "debugger" : "developer");
 
   validateRunnableProject(project);
   await ensureDir(await resolveArtifactsDir(project.project.root));
@@ -109,6 +112,7 @@ export async function runLoop(
 
   runtime.loop.status = "running";
   runtime.loop.pid = process.pid;
+  runtime.loop.task = input.task;
   runtime.loop.startedAt ??= new Date().toISOString();
   runtime.loop.startRole = input.startRole;
   runtime.loop.lastError = undefined;
@@ -378,6 +382,9 @@ Iteration: ${iteration}
 Managed branch: ${project.git.role_branch}
 Goal:
 ${project.goal}
+
+User-requested task for this loop:
+${runtime.loop.task ?? "No explicit user task was recorded."}
 
 Acceptance criteria:
 ${project.acceptance.map((item) => `- ${item}`).join("\n")}

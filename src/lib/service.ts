@@ -150,16 +150,26 @@ export class RoleService {
 
   async startLoop(input: LoopStartInput): Promise<RuntimeState> {
     const runtime = await loadRuntimeState(input.projectRoot);
+    const nextTask = input.task.trim();
     if (runtime.loop.status === "running" && runtime.loop.pid && processExists(runtime.loop.pid)) {
       throw new Error(
         `Project ${runtime.projectId} already has a running controller (pid ${runtime.loop.pid})`,
       );
+    }
+    if (!nextTask) {
+      throw new Error(`startLoop requires a non-empty task`);
+    }
+    ensureBothRolesAssigned(runtime);
+    if (runtime.loop.task?.trim() !== nextTask) {
+      runtime.loop.lastReportPath = undefined;
+      runtime.loop.lastRole = undefined;
     }
 
     await ensureDir(path.dirname(await resolveControllerLogPath(input.projectRoot)));
     const pid = await spawnLoopProcess(this.cliEntrypoint, input, runtime.projectId);
     runtime.loop.status = "running";
     runtime.loop.pid = pid;
+    runtime.loop.task = nextTask;
     runtime.loop.startRole = input.startRole;
     runtime.loop.startedAt = new Date().toISOString();
     runtime.loop.endedAt = undefined;
@@ -188,10 +198,20 @@ export class RoleService {
     const resolvedRoot = await this.resolveProjectSelector(projectRoot);
     const project = await loadProjectConfig(resolvedRoot);
     const runtime = await loadRuntimeState(resolvedRoot);
+    const controllerAlive = Boolean(runtime.loop.pid && processExists(runtime.loop.pid));
+    if (runtime.loop.status === "running" && !controllerAlive) {
+      runtime.loop.status = "orphaned";
+      runtime.loop.endedAt ??= new Date().toISOString();
+      runtime.loop.lastError ??= runtime.loop.pid
+        ? `Controller process ${runtime.loop.pid} is no longer alive`
+        : `Controller state was marked running without an active pid`;
+      runtime.loop.pid = undefined;
+      await saveRuntimeState(runtime);
+    }
     return {
       project,
       runtime,
-      controllerAlive: Boolean(runtime.loop.pid && processExists(runtime.loop.pid)),
+      controllerAlive,
     };
   }
 
@@ -232,5 +252,12 @@ function processExists(pid: number): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+function ensureBothRolesAssigned(runtime: RuntimeState): void {
+  const missing = (["developer", "debugger"] as const).filter((role) => !runtime.roles[role]);
+  if (missing.length > 0) {
+    throw new Error(`Both roles must be assigned before starting the loop (missing: ${missing.join(", ")})`);
   }
 }
