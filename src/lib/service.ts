@@ -23,12 +23,19 @@ import type {
   ProjectConfig,
   RuntimeState,
   SessionSummary,
+  StageLaunchInput,
+  RoleKind,
 } from "./types.js";
+
+interface RoleServiceOptions {
+  spawnLoop?: typeof spawnLoopProcess;
+}
 
 export class RoleService {
   constructor(
     private readonly repoRoot: string,
     private readonly cliEntrypoint: string,
+    private readonly options: RoleServiceOptions = {},
   ) {}
 
   async install(): Promise<InstallResult> {
@@ -148,32 +155,77 @@ export class RoleService {
     }
   }
 
-  async startLoop(input: LoopStartInput): Promise<RuntimeState> {
+  async stageLaunch(input: StageLaunchInput): Promise<RuntimeState> {
     const runtime = await loadRuntimeState(input.projectRoot);
-    const nextTask = input.task.trim();
-    if (runtime.loop.status === "running" && runtime.loop.pid && processExists(runtime.loop.pid)) {
+    syncControllerState(runtime);
+    ensureBothRolesAssigned(runtime);
+    const task = input.task.trim();
+    if (!task) {
+      throw new Error(`stageLaunch requires a non-empty task`);
+    }
+    if (runtime.loop.status === "running" && runtime.loop.pid) {
       throw new Error(
         `Project ${runtime.projectId} already has a running controller (pid ${runtime.loop.pid})`,
       );
     }
+
+    runtime.launch = {
+      stagedStartRole: input.startRole,
+      stagedTask: task,
+      stagedAt: new Date().toISOString(),
+    };
+    await saveRuntimeState(runtime);
+    return runtime;
+  }
+
+  async clearLaunch(projectRoot: string): Promise<RuntimeState> {
+    const runtime = await loadRuntimeState(projectRoot);
+    runtime.launch = {};
+    await saveRuntimeState(runtime);
+    return runtime;
+  }
+
+  async startLoop(input: LoopStartInput): Promise<RuntimeState> {
+    const runtime = await loadRuntimeState(input.projectRoot);
+    const controllerAlive = syncControllerState(runtime);
+    const startRole = input.startRole ?? runtime.launch.stagedStartRole;
+    const nextTask = input.task?.trim() || runtime.launch.stagedTask?.trim();
+    if (controllerAlive && runtime.loop.pid) {
+      throw new Error(
+        `Project ${runtime.projectId} already has a running controller (pid ${runtime.loop.pid})`,
+      );
+    }
+    if (startRole !== "developer" && startRole !== "debugger") {
+      throw new Error(`startLoop requires a staged or explicit startRole`);
+    }
     if (!nextTask) {
-      throw new Error(`startLoop requires a non-empty task`);
+      throw new Error(`startLoop requires a staged or explicit non-empty task`);
     }
     ensureBothRolesAssigned(runtime);
-    if (runtime.loop.task?.trim() !== nextTask) {
-      runtime.loop.lastReportPath = undefined;
-      runtime.loop.lastRole = undefined;
-    }
 
     await ensureDir(path.dirname(await resolveControllerLogPath(input.projectRoot)));
-    const pid = await spawnLoopProcess(this.cliEntrypoint, input, runtime.projectId);
+    const pid = await (this.options.spawnLoop ?? spawnLoopProcess)(
+      this.cliEntrypoint,
+      {
+        projectRoot: input.projectRoot,
+        startRole,
+        task: nextTask,
+      },
+      runtime.projectId,
+    );
+    runtime.launch = {};
     runtime.loop.status = "running";
     runtime.loop.pid = pid;
     runtime.loop.task = nextTask;
-    runtime.loop.startRole = input.startRole;
+    runtime.loop.iteration = 0;
+    runtime.loop.startRole = startRole;
+    runtime.loop.lastRole = undefined;
+    runtime.loop.lastCommitSha = undefined;
+    runtime.loop.lastReportPath = undefined;
     runtime.loop.startedAt = new Date().toISOString();
     runtime.loop.endedAt = undefined;
     runtime.loop.lastError = undefined;
+    runtime.history = [];
     await saveRuntimeState(runtime);
     return runtime;
   }
@@ -198,14 +250,8 @@ export class RoleService {
     const resolvedRoot = await this.resolveProjectSelector(projectRoot);
     const project = await loadProjectConfig(resolvedRoot);
     const runtime = await loadRuntimeState(resolvedRoot);
-    const controllerAlive = Boolean(runtime.loop.pid && processExists(runtime.loop.pid));
-    if (runtime.loop.status === "running" && !controllerAlive) {
-      runtime.loop.status = "orphaned";
-      runtime.loop.endedAt ??= new Date().toISOString();
-      runtime.loop.lastError ??= runtime.loop.pid
-        ? `Controller process ${runtime.loop.pid} is no longer alive`
-        : `Controller state was marked running without an active pid`;
-      runtime.loop.pid = undefined;
+    const controllerAlive = syncControllerState(runtime);
+    if (runtime.loop.status === "orphaned" && !controllerAlive) {
       await saveRuntimeState(runtime);
     }
     return {
@@ -215,7 +261,9 @@ export class RoleService {
     };
   }
 
-  async runLoopForeground(input: LoopStartInput): Promise<RuntimeState> {
+  async runLoopForeground(
+    input: LoopStartInput & { startRole: RoleKind; task: string },
+  ): Promise<RuntimeState> {
     return runLoop(this.repoRoot, input);
   }
 
@@ -253,6 +301,20 @@ function processExists(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+function syncControllerState(runtime: RuntimeState): boolean {
+  const controllerAlive = Boolean(runtime.loop.pid && processExists(runtime.loop.pid));
+  if (runtime.loop.status === "running" && !controllerAlive) {
+    const exitedPid = runtime.loop.pid;
+    runtime.loop.status = "orphaned";
+    runtime.loop.endedAt ??= new Date().toISOString();
+    runtime.loop.lastError ??= exitedPid
+      ? `Controller process ${exitedPid} is no longer alive`
+      : `Controller state was marked running without an active pid`;
+    runtime.loop.pid = undefined;
+  }
+  return controllerAlive;
 }
 
 function ensureBothRolesAssigned(runtime: RuntimeState): void {

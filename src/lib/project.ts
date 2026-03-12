@@ -101,6 +101,7 @@ export function defaultRuntimeState(
     projectRoot: projectConfig.project.root,
     controllerThreadId,
     roles: {},
+    launch: {},
     loop: {
       status: "idle",
       iteration: 0,
@@ -156,10 +157,11 @@ export async function saveProjectConfig(project: ProjectConfig): Promise<void> {
 
 export async function loadRuntimeState(projectRoot: string): Promise<RuntimeState> {
   const project = await loadProjectConfig(projectRoot);
-  return readJsonFile(
+  const runtime = await readJsonFile(
     await resolveRuntimeStatePath(project.project.root),
     defaultRuntimeState(project),
   );
+  return normalizeRuntimeState(project, runtime);
 }
 
 export async function saveRuntimeState(runtime: RuntimeState): Promise<void> {
@@ -266,6 +268,27 @@ export async function resolveControllerLogPath(projectRoot: string): Promise<str
   }
 
   return currentPath;
+}
+
+function normalizeRuntimeState(
+  project: ProjectConfig,
+  runtime: RuntimeState,
+): RuntimeState {
+  const fallback = defaultRuntimeState(project, runtime.controllerThreadId);
+  return {
+    ...fallback,
+    ...runtime,
+    roles: runtime.roles ?? {},
+    launch: {
+      ...fallback.launch,
+      ...(runtime.launch ?? {}),
+    },
+    loop: {
+      ...fallback.loop,
+      ...(runtime.loop ?? {}),
+    },
+    history: runtime.history ?? [],
+  };
 }
 
 function validateProjectConfig(project: ProjectConfig, configPath: string): void {

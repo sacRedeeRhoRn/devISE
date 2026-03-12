@@ -65,6 +65,7 @@ test("createProjectFiles writes spec, config, and runtime", async () => {
 
   const loadedRuntime = await loadRuntimeState(projectRoot);
   assert.equal(loadedRuntime.projectId, project.project.id);
+  assert.deepEqual(loadedRuntime.launch, {});
   assert.equal(loadedRuntime.loop.status, "idle");
 
   assert.equal(await exists(projectConfigPath(projectRoot)), true);

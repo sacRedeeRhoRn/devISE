@@ -40,6 +40,14 @@ export function promptAliasInstallPath(): string {
   return path.join(codexHome(), "prompts", "devise.md");
 }
 
+export function promptFlightInstallPath(): string {
+  return path.join(codexHome(), "prompts", "devise-flight.md");
+}
+
+export function promptLandInstallPath(): string {
+  return path.join(codexHome(), "prompts", "devise-land.md");
+}
+
 export function skillInstallRoot(): string {
   return path.join(codexHome(), "skills", "role-project-planner");
 }

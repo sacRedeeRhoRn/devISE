@@ -164,14 +164,39 @@ function registerWorkflowNamespace(
   );
 
   server.registerTool(
-    `${namespace}.start_loop`,
+    `${namespace}.stage_launch`,
     {
       description:
-        "Start the background developer/debugger loop for a managed project using a specific user-requested task and starting role.",
+        "Stage the next automatic loop launch for a managed project without starting the controller yet.",
       inputSchema: {
         projectRoot: z.string(),
         startRole: z.enum(["developer", "debugger"]),
         task: z.string().min(1),
+      },
+    },
+    async ({ projectRoot, startRole, task }) => {
+      const runtime = await service.stageLaunch({ projectRoot, startRole, task });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Staged launch for ${runtime.projectId} on ${runtime.launch.stagedStartRole} with task: ${runtime.launch.stagedTask}`,
+          },
+        ],
+        structuredContent: structured(runtime),
+      };
+    },
+  );
+
+  server.registerTool(
+    `${namespace}.start_loop`,
+    {
+      description:
+        "Start the background developer/debugger loop for a managed project using staged launch state or explicit start parameters.",
+      inputSchema: {
+        projectRoot: z.string(),
+        startRole: z.enum(["developer", "debugger"]).optional(),
+        task: z.string().min(1).optional(),
       },
     },
     async ({ projectRoot, startRole, task }) => {
@@ -180,7 +205,7 @@ function registerWorkflowNamespace(
         content: [
           {
             type: "text",
-            text: `Started loop for ${runtime.projectId} with pid ${runtime.loop.pid} on ${startRole} for task: ${task}`,
+            text: `Started loop for ${runtime.projectId} with pid ${runtime.loop.pid} on ${runtime.loop.startRole} for task: ${runtime.loop.task}`,
           },
         ],
         structuredContent: structured(runtime),
@@ -198,14 +223,39 @@ function registerWorkflowNamespace(
     },
     async ({ projectRoot }) => {
       const status = await service.getStatus(projectRoot);
+      const armed = Boolean(
+        status.runtime.launch.stagedStartRole && status.runtime.launch.stagedTask,
+      );
       return {
         content: [
           {
             type: "text",
-            text: `Project ${status.project.project.id}: ${status.runtime.loop.status}`,
+            text: `Project ${status.project.project.id}: loop=${status.runtime.loop.status} armed=${armed}`,
           },
         ],
         structuredContent: structured(status),
+      };
+    },
+  );
+
+  server.registerTool(
+    `${namespace}.clear_launch`,
+    {
+      description: "Clear the staged launch state for a managed project without changing role assignments.",
+      inputSchema: {
+        projectRoot: z.string(),
+      },
+    },
+    async ({ projectRoot }) => {
+      const runtime = await service.clearLaunch(projectRoot);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Cleared staged launch for ${runtime.projectId}`,
+          },
+        ],
+        structuredContent: structured(runtime),
       };
     },
   );

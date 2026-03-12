@@ -34,11 +34,17 @@ async function main(): Promise<void> {
     case "status": {
       const projectRoot = rest[0] ?? process.cwd();
       const status = await service.getStatus(projectRoot);
+      const armed = Boolean(
+        status.runtime.launch.stagedStartRole && status.runtime.launch.stagedTask,
+      );
       console.log(`project: ${status.project.project.id}`);
       console.log(`root: ${status.project.project.root}`);
       console.log(`loop: ${status.runtime.loop.status}`);
       console.log(`iteration: ${status.runtime.loop.iteration}`);
-      console.log(`task: ${status.runtime.loop.task ?? "none"}`);
+      console.log(`armed: ${armed}`);
+      console.log(`loop_task: ${status.runtime.loop.task ?? "none"}`);
+      console.log(`staged_start_role: ${status.runtime.launch.stagedStartRole ?? "none"}`);
+      console.log(`staged_task: ${status.runtime.launch.stagedTask ?? "none"}`);
       console.log(`pid: ${status.runtime.loop.pid ?? "none"}`);
       console.log(`controller_alive: ${status.controllerAlive}`);
       console.log(`roles: ${Object.keys(status.runtime.roles).join(", ") || "none"}`);
@@ -57,6 +63,57 @@ async function main(): Promise<void> {
       if (status.runtime.loop.lastError) {
         console.log(`last_error: ${status.runtime.loop.lastError}`);
       }
+      return;
+    }
+
+    case "stage-launch": {
+      const projectRoot = valueForFlag(rest, "--project-root");
+      const startRole = valueForFlag(rest, "--start-role");
+      const task = valueForFlag(rest, "--task");
+      if (!projectRoot || !task || (startRole !== "developer" && startRole !== "debugger")) {
+        throw new Error(`stage-launch requires --project-root, --start-role, and --task`);
+      }
+      const runtime = await service.stageLaunch({
+        projectRoot: path.resolve(projectRoot),
+        startRole,
+        task,
+      });
+      console.log(`project: ${runtime.projectId}`);
+      console.log(`staged_start_role: ${runtime.launch.stagedStartRole ?? "none"}`);
+      console.log(`staged_task: ${runtime.launch.stagedTask ?? "none"}`);
+      return;
+    }
+
+    case "flight": {
+      const projectRoot = valueForFlag(rest, "--project-root");
+      if (!projectRoot) {
+        throw new Error(`flight requires --project-root`);
+      }
+      const runtime = await service.startLoop({
+        projectRoot: path.resolve(projectRoot),
+      });
+      console.log(`project: ${runtime.projectId}`);
+      console.log(`loop: ${runtime.loop.status}`);
+      console.log(`start_role: ${runtime.loop.startRole ?? "none"}`);
+      console.log(`task: ${runtime.loop.task ?? "none"}`);
+      console.log(`pid: ${runtime.loop.pid ?? "none"}`);
+      return;
+    }
+
+    case "land": {
+      const projectRoot = valueForFlag(rest, "--project-root");
+      if (!projectRoot) {
+        throw new Error(`land requires --project-root`);
+      }
+      const status = await service.getStatus(path.resolve(projectRoot));
+      if (status.controllerAlive) {
+        await service.stopLoop(status.project.project.root);
+      }
+      const runtime = await service.clearLaunch(status.project.project.root);
+      console.log(`project: ${runtime.projectId}`);
+      console.log(`loop: ${runtime.loop.status}`);
+      console.log(`staged_start_role: ${runtime.launch.stagedStartRole ?? "none"}`);
+      console.log(`staged_task: ${runtime.launch.stagedTask ?? "none"}`);
       return;
     }
 
@@ -97,6 +154,9 @@ function printUsage(): never {
   devISE install
   devISE doctor [project-root]
   devISE status [project-root]
+  devISE stage-launch --project-root <path> --start-role <developer|debugger> --task <text>
+  devISE flight --project-root <path>
+  devISE land --project-root <path>
   devISE serve
   devISE run-loop --project-root <path> --start-role <developer|debugger> --task <text>`);
   process.exit(1);

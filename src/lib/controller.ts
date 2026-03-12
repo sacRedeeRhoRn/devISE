@@ -25,6 +25,11 @@ import type {
   RuntimeState,
 } from "./types.js";
 
+type ResolvedLoopStartInput = LoopStartInput & {
+  startRole: RoleKind;
+  task: string;
+};
+
 const ROLE_OUTPUT_SCHEMAS: Record<RoleKind, Record<string, unknown>> = {
   developer: {
     type: "object",
@@ -73,7 +78,7 @@ const ROLE_OUTPUT_SCHEMAS: Record<RoleKind, Record<string, unknown>> = {
 
 export async function spawnLoopProcess(
   cliEntrypoint: string,
-  input: LoopStartInput,
+  input: ResolvedLoopStartInput,
   projectId: string,
 ): Promise<number> {
   const child = spawn(
@@ -99,7 +104,7 @@ export async function spawnLoopProcess(
 
 export async function runLoop(
   repoRoot: string,
-  input: LoopStartInput,
+  input: ResolvedLoopStartInput,
 ): Promise<RuntimeState> {
   const project = await loadProjectConfig(input.projectRoot);
   const runtime = await loadRuntimeState(input.projectRoot);

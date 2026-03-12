@@ -67,12 +67,19 @@ export interface IterationRecord {
   at: string;
 }
 
+export interface LaunchState {
+  stagedStartRole?: RoleKind;
+  stagedTask?: string;
+  stagedAt?: string;
+}
+
 export interface RuntimeState {
   version: 1;
   projectId: string;
   projectRoot: string;
   controllerThreadId?: string;
   roles: Partial<Record<RoleKind, RoleSession>>;
+  launch: LaunchState;
   loop: {
     status: LoopStatus;
     pid?: number;
@@ -135,6 +142,12 @@ export interface AssignmentInput {
 }
 
 export interface LoopStartInput {
+  projectRoot: string;
+  startRole?: RoleKind;
+  task?: string;
+}
+
+export interface StageLaunchInput {
   projectRoot: string;
   startRole: RoleKind;
   task: string;

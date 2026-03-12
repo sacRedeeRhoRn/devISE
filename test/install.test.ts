@@ -1,7 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
-import { removeNamedTomlTable, renderMcpBlock, upsertNamedTomlTable } from "../src/lib/install.js";
+import {
+  doctor,
+  installAssets,
+  removeNamedTomlTable,
+  renderMcpBlock,
+  upsertNamedTomlTable,
+} from "../src/lib/install.js";
+import {
+  promptAliasInstallPath,
+  promptFlightInstallPath,
+  promptInstallPath,
+  promptLandInstallPath,
+} from "../src/lib/paths.js";
 
 test("upsertNamedTomlTable appends missing table", () => {
   const initial = 'model = "gpt-5.4"\n';
@@ -44,4 +59,32 @@ apps = true
 
   assert.doesNotMatch(updated, /\[mcp_servers\.codex_role\]/);
   assert.match(updated, /\[features\]/);
+});
+
+test("installAssets and doctor cover role, alias, flight, and land prompts", async () => {
+  const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "devise-codex-home-"));
+  const originalCodexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = codexHome;
+
+  try {
+    await installAssets(process.cwd(), "/tmp/devise-cli.js");
+    const findings = await doctor(process.cwd(), "/tmp/devise-cli.js");
+
+    await assert.doesNotReject(() => fs.access(promptInstallPath()));
+    await assert.doesNotReject(() => fs.access(promptAliasInstallPath()));
+    await assert.doesNotReject(() => fs.access(promptFlightInstallPath()));
+    await assert.doesNotReject(() => fs.access(promptLandInstallPath()));
+
+    assert(findings.some((line) => line.includes("OK prompt installed")));
+    assert(findings.some((line) => line.includes("OK prompt alias installed")));
+    assert(findings.some((line) => line.includes("OK flight prompt installed")));
+    assert(findings.some((line) => line.includes("OK land prompt installed")));
+  } finally {
+    if (originalCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = originalCodexHome;
+    }
+    await fs.rm(codexHome, { recursive: true, force: true });
+  }
 });

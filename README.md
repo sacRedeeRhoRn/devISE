@@ -15,6 +15,8 @@ node dist/src/cli.js doctor
 
 - `/role` prompt entrypoint
 - `/devise` prompt alias
+- `/devise-flight` launch prompt
+- `/devise-land` landing prompt
 - `role.*` MCP tools for compatibility
 - `devise.*` MCP tools as the current namespace
 - `role-project-planner` and `devise-project-planner` skill installs
@@ -29,18 +31,18 @@ After install, open Codex in the project you want to manage and use one of these
 /role create-project
 /role
 /role resume-project
+/devise-flight
+/devise-land
 ```
 
 Behavior:
 
 - `/role create-project` creates the managed project spec and command contract.
 - `/role` defaults to resume for the current working directory.
-- Resume flow checks current status first, reuses any existing role assignments, and attaches any missing `developer` or `debugger` session.
-- After both roles are assigned, you provide:
-  the role that should take the next task first
-  the exact task that should seed the loop
-- The controller starts only after that explicit task seed.
-- Each role writes a detailed handoff artifact for the counterpart role, and the controller alternates between them until the project goal is met, blocked, orphaned, or stagnated.
+- `/role` checks current status first, reuses any existing role assignments, attaches any missing `developer` or `debugger` session, and stages the next launch seed.
+- `/devise-flight` is the only prompt that starts the automatic loop from the staged start role and task.
+- `/devise-land` stops the running loop if needed and clears the staged launch while keeping role assignments.
+- Once `/devise-flight` starts the loop, the controller alternates the two roles automatically until the project goal is met, blocked, failed, or manually landed.
 
 `/devise` is kept as an alias, but `/role` should be treated as the primary entrypoint.
 
@@ -63,10 +65,14 @@ Each managed project stores a command contract under `.devise/` or legacy `.code
 - `node dist/src/cli.js install`
 - `node dist/src/cli.js doctor`
 - `node dist/src/cli.js status <project-id>`
+- `node dist/src/cli.js stage-launch --project-root <path> --start-role <developer|debugger> --task <text>`
+- `node dist/src/cli.js flight --project-root <path>`
+- `node dist/src/cli.js land --project-root <path>`
 - `node dist/src/cli.js serve`
-- `node dist/src/cli.js run-loop --project-root <path> --start-role <developer|debugger> --task <text>`
+- `node dist/src/cli.js run-loop --project-root <path> --start-role <developer|debugger> --task <text>` (internal controller entrypoint)
 
 ## Notes
 
 - Existing `.codex-role` projects and `role.*` tool names are still supported.
 - `status` accepts either a project root or a registered project id.
+- Landing keeps role assignments but clears the staged launch, so the next automatic run must be re-armed from `/role`.

@@ -5,7 +5,9 @@ import { ensureDir, pathExists } from "./fs.js";
 import {
   mcpConfigPath,
   promptAliasInstallPath,
+  promptFlightInstallPath,
   promptInstallPath,
+  promptLandInstallPath,
   skillAliasInstallRoot,
   skillInstallRoot,
 } from "./paths.js";
@@ -21,11 +23,15 @@ export interface InstallResult {
 
 export async function installAssets(repoRoot: string, cliEntrypoint: string): Promise<InstallResult> {
   const promptSource = path.join(repoRoot, "assets", "prompts", "devise.md");
+  const flightPromptSource = path.join(repoRoot, "assets", "prompts", "devise-flight.md");
+  const landPromptSource = path.join(repoRoot, "assets", "prompts", "devise-land.md");
   const skillSource = path.join(repoRoot, "assets", "skills", "devise-project-planner");
 
   await ensureDir(path.dirname(promptInstallPath()));
   await fs.copyFile(promptSource, promptInstallPath());
   await fs.copyFile(promptSource, promptAliasInstallPath());
+  await fs.copyFile(flightPromptSource, promptFlightInstallPath());
+  await fs.copyFile(landPromptSource, promptLandInstallPath());
 
   await copyDir(skillSource, skillInstallRoot());
   await copyDir(skillSource, skillAliasInstallRoot());
@@ -41,6 +47,8 @@ export async function installAssets(repoRoot: string, cliEntrypoint: string): Pr
 export async function doctor(repoRoot: string, cliEntrypoint: string): Promise<string[]> {
   const promptPath = promptInstallPath();
   const promptAliasPath = promptAliasInstallPath();
+  const promptFlightPath = promptFlightInstallPath();
+  const promptLandPath = promptLandInstallPath();
   const skillPath = skillInstallRoot();
   const skillAliasPath = skillAliasInstallRoot();
   const configPath = mcpConfigPath();
@@ -55,6 +63,16 @@ export async function doctor(repoRoot: string, cliEntrypoint: string): Promise<s
     (await pathExists(promptAliasPath))
       ? `OK prompt alias installed at ${promptAliasPath}`
       : `MISSING prompt alias at ${promptAliasPath}`,
+  );
+  findings.push(
+    (await pathExists(promptFlightPath))
+      ? `OK flight prompt installed at ${promptFlightPath}`
+      : `MISSING flight prompt at ${promptFlightPath}`,
+  );
+  findings.push(
+    (await pathExists(promptLandPath))
+      ? `OK land prompt installed at ${promptLandPath}`
+      : `MISSING land prompt at ${promptLandPath}`,
   );
   findings.push(
     (await pathExists(path.join(skillPath, "SKILL.md")))
@@ -75,6 +93,16 @@ export async function doctor(repoRoot: string, cliEntrypoint: string): Promise<s
     (await pathExists(path.join(repoRoot, "assets", "prompts", "devise.md")))
       ? `OK local prompt asset present`
       : `MISSING local prompt asset`,
+  );
+  findings.push(
+    (await pathExists(path.join(repoRoot, "assets", "prompts", "devise-flight.md")))
+      ? `OK local flight prompt asset present`
+      : `MISSING local flight prompt asset`,
+  );
+  findings.push(
+    (await pathExists(path.join(repoRoot, "assets", "prompts", "devise-land.md")))
+      ? `OK local land prompt asset present`
+      : `MISSING local land prompt asset`,
   );
 
   return findings;
