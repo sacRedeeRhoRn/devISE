@@ -5,9 +5,6 @@ import { spawn } from "node:child_process";
 import { CodexAppServerClient, type ThreadLike } from "./appServerClient.js";
 import { ensureDir, pathExists, readTextIfExists } from "./fs.js";
 import {
-  artifactsDir,
-  controllerLogPath,
-  projectConfigPath,
   repoRootFromModule,
   specPath,
 } from "./paths.js";
@@ -15,6 +12,9 @@ import {
   ensureRoleAssigned,
   loadProjectConfig,
   loadRuntimeState,
+  resolveArtifactsDir,
+  resolveControllerLogPath,
+  resolveProjectConfigPath,
   saveRuntimeState,
 } from "./project.js";
 import type {
@@ -42,12 +42,26 @@ const ROLE_OUTPUT_SCHEMAS: Record<RoleKind, Record<string, unknown>> = {
   debugger: {
     type: "object",
     additionalProperties: false,
-    required: ["status", "use_passed", "summary", "report_path", "issues"],
+    required: [
+      "status",
+      "use_passed",
+      "summary",
+      "report_path",
+      "issues",
+      "restart_performed",
+      "monitor_result",
+    ],
     properties: {
       status: { type: "string", enum: ["goal_met", "needs_fix", "blocked"] },
       use_passed: { type: "boolean" },
       summary: { type: "string" },
       report_path: { type: "string" },
+      restart_performed: { type: "boolean" },
+      monitor_result: {
+        type: "string",
+        enum: ["not_configured", "caveat_observed", "process_ended", "timeout_reached"],
+      },
+      observed_caveat: { type: "string" },
       issues: {
         type: "array",
         items: { type: "string" },
@@ -90,7 +104,7 @@ export async function runLoop(
   ensureRoleAssigned(runtime, input.startRole);
 
   validateRunnableProject(project);
-  await ensureDir(artifactsDir(project.project.root));
+  await ensureDir(await resolveArtifactsDir(project.project.root));
   await ensureManagedBranch(project.project.root, project.git.role_branch);
 
   runtime.loop.status = "running";
@@ -250,7 +264,10 @@ async function runRoleTurn(
 ): Promise<ControllerTurnResult> {
   ensureRoleAssigned(runtime, role);
   const roleSession = runtime.roles[role]!;
-  const artifactDir = path.join(artifactsDir(project.project.root), `iter-${String(iteration).padStart(3, "0")}`);
+  const artifactDir = path.join(
+    await resolveArtifactsDir(project.project.root),
+    `iter-${String(iteration).padStart(3, "0")}`,
+  );
   await ensureDir(artifactDir);
   const artifactPath = path.join(
     artifactDir,
@@ -321,6 +338,7 @@ async function runRoleTurn(
     parsed.commit_sha ??= await readHeadSha(project.project.root);
   } else {
     parsed.report_path ??= artifactPath;
+    validateDebuggerTurnResult(project, parsed);
   }
 
   await appendControllerLog(project.project.root, role, iteration, parsed);
@@ -343,14 +361,19 @@ async function buildRoleTurnPrompt(
       : "No prior counterpart artifact is available.";
   const commands =
     role === "developer"
-      ? project.commands.dry_test.map((command) => `- ${command}`).join("\n")
-      : project.commands.use.map((command) => `- ${command}`).join("\n");
+      ? renderCommandList(project.commands.dry_test)
+      : renderCommandList(project.commands.use);
+  const restartCommands = renderCommandList(project.commands.restart);
+  const monitorCommands = renderCommandList(project.commands.monitor);
+  const monitorUntil = renderBulletList(project.commands.monitor_until);
+  const monitorTimeoutSeconds = project.commands.monitor_timeout_seconds ?? 300;
+  const projectConfig = await resolveProjectConfigPath(project.project.root);
 
   return `${roleInstructions}
 
 Project root: ${project.project.root}
 Project spec: ${specPath(project.project.root)}
-Project config: ${projectConfigPath(project.project.root)}
+Project config: ${projectConfig}
 Iteration: ${iteration}
 Managed branch: ${project.git.role_branch}
 Goal:
@@ -361,6 +384,18 @@ ${project.acceptance.map((item) => `- ${item}`).join("\n")}
 
 Commands for this role:
 ${commands}
+
+Debugger clean restart commands:
+${role === "debugger" ? restartCommands : "Not applicable for this role."}
+
+Debugger monitor commands:
+${role === "debugger" ? monitorCommands : "Not applicable for this role."}
+
+Debugger monitoring caveats:
+${role === "debugger" ? monitorUntil : "Not applicable for this role."}
+
+Debugger monitoring timeout seconds:
+${role === "debugger" ? String(monitorTimeoutSeconds) : "Not applicable for this role."}
 
 Counterpart context:
 ${counterpartSummary}
@@ -377,6 +412,48 @@ async function loadRoleBaseInstructions(
 ): Promise<string> {
   const rolePath = path.join(repoRoot, "assets", "roles", `${role}.md`);
   return fs.readFile(rolePath, "utf8");
+}
+
+function renderCommandList(commands?: string[]): string {
+  if (!commands || commands.length === 0) {
+    return "- None configured.";
+  }
+
+  return commands.map((command) => `- ${command}`).join("\n");
+}
+
+function renderBulletList(items?: string[]): string {
+  if (!items || items.length === 0) {
+    return "- None configured.";
+  }
+
+  return items.map((item) => `- ${item}`).join("\n");
+}
+
+function validateDebuggerTurnResult(
+  project: ProjectConfig,
+  result: ControllerTurnResult,
+): void {
+  const restartConfigured = (project.commands.restart?.length ?? 0) > 0;
+  const monitoringConfigured =
+    (project.commands.monitor?.length ?? 0) > 0 ||
+    (project.commands.monitor_until?.length ?? 0) > 0;
+
+  if (restartConfigured && result.status !== "blocked" && result.restart_performed !== true) {
+    throw new Error("Debugger turn did not confirm executing the configured clean restart commands");
+  }
+
+  if (monitoringConfigured && result.monitor_result === "not_configured") {
+    throw new Error("Debugger turn reported monitor_result=not_configured despite monitoring requirements");
+  }
+
+  if (result.monitor_result === "caveat_observed" && !result.observed_caveat) {
+    throw new Error("Debugger turn reported caveat_observed without observed_caveat");
+  }
+
+  if (result.status === "goal_met" && result.monitor_result === "caveat_observed") {
+    throw new Error("Debugger turn cannot report goal_met when a monitoring caveat was observed");
+  }
 }
 
 export function managedThreadName(projectId: string, role: RoleKind): string {
@@ -461,7 +538,7 @@ async function appendControllerLog(
   result: ControllerTurnResult,
 ): Promise<void> {
   const line = `${new Date().toISOString()} iter=${iteration} role=${role} status=${result.status} summary=${JSON.stringify(result.summary)}\n`;
-  await fs.appendFile(controllerLogPath(projectRoot), line, "utf8");
+  await fs.appendFile(await resolveControllerLogPath(projectRoot), line, "utf8");
 }
 
 function validateRunnableProject(project: ProjectConfig): void {

@@ -12,7 +12,11 @@ export type LoopStatus =
 export interface CommandContract {
   setup?: string[];
   dry_test: string[];
+  restart?: string[];
   use: string[];
+  monitor?: string[];
+  monitor_until?: string[];
+  monitor_timeout_seconds?: number;
 }
 
 export interface RoleConfig {
@@ -101,7 +105,11 @@ export interface CreateProjectInput {
   goal: string;
   acceptance?: string[];
   dryTestCommands?: string[];
+  restartCommands?: string[];
   useCommands?: string[];
+  monitorCommands?: string[];
+  monitorUntil?: string[];
+  monitorTimeoutSeconds?: number;
   setupCommands?: string[];
   projectId?: string;
   controllerThreadId?: string;
@@ -134,6 +142,9 @@ export interface ControllerTurnResult {
   summary: string;
   dry_test_passed?: boolean;
   use_passed?: boolean;
+  restart_performed?: boolean;
+  monitor_result?: "not_configured" | "caveat_observed" | "process_ended" | "timeout_reached";
+  observed_caveat?: string;
   commit_sha?: string;
   handoff_report_path?: string;
   report_path?: string;

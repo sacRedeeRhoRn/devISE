@@ -2,9 +2,16 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { ensureDir, pathExists } from "./fs.js";
-import { mcpConfigPath, promptInstallPath, skillInstallRoot } from "./paths.js";
+import {
+  mcpConfigPath,
+  promptAliasInstallPath,
+  promptInstallPath,
+  skillAliasInstallRoot,
+  skillInstallRoot,
+} from "./paths.js";
 
 const MCP_SERVER_BLOCK_NAME = "devise";
+const LEGACY_MCP_SERVER_BLOCK_NAME = "codex_role";
 
 export interface InstallResult {
   promptPath: string;
@@ -18,8 +25,10 @@ export async function installAssets(repoRoot: string, cliEntrypoint: string): Pr
 
   await ensureDir(path.dirname(promptInstallPath()));
   await fs.copyFile(promptSource, promptInstallPath());
+  await fs.copyFile(promptSource, promptAliasInstallPath());
 
   await copyDir(skillSource, skillInstallRoot());
+  await copyDir(skillSource, skillAliasInstallRoot());
   await installMcpConfig(cliEntrypoint);
 
   return {
@@ -31,7 +40,9 @@ export async function installAssets(repoRoot: string, cliEntrypoint: string): Pr
 
 export async function doctor(repoRoot: string, cliEntrypoint: string): Promise<string[]> {
   const promptPath = promptInstallPath();
+  const promptAliasPath = promptAliasInstallPath();
   const skillPath = skillInstallRoot();
+  const skillAliasPath = skillAliasInstallRoot();
   const configPath = mcpConfigPath();
   const findings: string[] = [];
 
@@ -41,9 +52,19 @@ export async function doctor(repoRoot: string, cliEntrypoint: string): Promise<s
       : `MISSING prompt at ${promptPath}`,
   );
   findings.push(
+    (await pathExists(promptAliasPath))
+      ? `OK prompt alias installed at ${promptAliasPath}`
+      : `MISSING prompt alias at ${promptAliasPath}`,
+  );
+  findings.push(
     (await pathExists(path.join(skillPath, "SKILL.md")))
       ? `OK skill installed at ${skillPath}`
       : `MISSING skill at ${skillPath}`,
+  );
+  findings.push(
+    (await pathExists(path.join(skillAliasPath, "SKILL.md")))
+      ? `OK skill alias installed at ${skillAliasPath}`
+      : `MISSING skill alias at ${skillAliasPath}`,
   );
   findings.push(
     (await configContainsManagedServer(configPath, cliEntrypoint))
@@ -65,7 +86,15 @@ export async function installMcpConfig(cliEntrypoint: string): Promise<void> {
     ? await fs.readFile(configPath, "utf8")
     : "";
   const block = renderMcpBlock(cliEntrypoint);
-  const updated = upsertNamedTomlTable(existing, `mcp_servers.${MCP_SERVER_BLOCK_NAME}`, block);
+  const withManagedBlock = upsertNamedTomlTable(
+    existing,
+    `mcp_servers.${MCP_SERVER_BLOCK_NAME}`,
+    block,
+  );
+  const updated = removeNamedTomlTable(
+    withManagedBlock,
+    `mcp_servers.${LEGACY_MCP_SERVER_BLOCK_NAME}`,
+  );
   await ensureDir(path.dirname(configPath));
   await fs.writeFile(configPath, updated, "utf8");
 }
@@ -113,7 +142,30 @@ async function configContainsManagedServer(
   }
 
   const raw = await fs.readFile(configPath, "utf8");
-  return raw.includes(`[mcp_servers.${MCP_SERVER_BLOCK_NAME}]`) && raw.includes(cliEntrypoint);
+  return (
+    (raw.includes(`[mcp_servers.${MCP_SERVER_BLOCK_NAME}]`) ||
+      raw.includes(`[mcp_servers.${LEGACY_MCP_SERVER_BLOCK_NAME}]`)) &&
+    raw.includes(cliEntrypoint)
+  );
+}
+
+export function removeNamedTomlTable(existing: string, tableName: string): string {
+  const header = `[${tableName}]`;
+  const start = existing.indexOf(header);
+  if (start < 0) {
+    return existing;
+  }
+
+  const remainder = existing.slice(start + header.length);
+  const nextHeaderOffset = remainder.search(/\n\[[^\]]+\]/);
+  const end =
+    nextHeaderOffset >= 0
+      ? start + header.length + nextHeaderOffset + 1
+      : existing.length;
+  const updated = `${existing.slice(0, start).replace(/\n+$/, "\n")}${existing
+    .slice(end)
+    .replace(/^\n+/, "")}`;
+  return updated.trim().length === 0 ? "" : `${updated.trimEnd()}\n`;
 }
 
 async function copyDir(sourceDir: string, targetDir: string): Promise<void> {

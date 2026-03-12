@@ -3,17 +3,15 @@ import path from "node:path";
 import { CodexAppServerClient, type ThreadLike } from "./appServerClient.js";
 import { runLoop, managedThreadName, spawnLoopProcess } from "./controller.js";
 import { doctor as runDoctor, installAssets } from "./install.js";
-import { ensureDir, pathExists } from "./fs.js";
-import {
-  controllerLogPath,
-  projectConfigPath,
-  registryPath,
-  runtimeStatePath,
-} from "./paths.js";
+import { ensureDir } from "./fs.js";
+import { registryPath } from "./paths.js";
 import {
   createProjectFiles,
+  hasManagedProjectConfig,
   loadProjectConfig,
   loadRuntimeState,
+  resolveControllerLogPath,
+  resolveRuntimeStatePath,
   saveRuntimeState,
 } from "./project.js";
 import { loadRegistry, upsertRegistryEntry } from "./registry.js";
@@ -40,11 +38,11 @@ export class RoleService {
   async doctor(projectRoot?: string): Promise<string[]> {
     const findings = await runDoctor(this.repoRoot, this.cliEntrypoint);
     const targetRoot = projectRoot ? path.resolve(projectRoot) : process.cwd();
-    if (await pathExists(projectConfigPath(targetRoot))) {
+    if (await hasManagedProjectConfig(targetRoot)) {
       const project = await loadProjectConfig(targetRoot);
       findings.push(`OK project config loaded for ${project.project.id}`);
-      findings.push(`Runtime state path: ${runtimeStatePath(targetRoot)}`);
-      findings.push(`Controller log path: ${controllerLogPath(targetRoot)}`);
+      findings.push(`Runtime state path: ${await resolveRuntimeStatePath(targetRoot)}`);
+      findings.push(`Controller log path: ${await resolveControllerLogPath(targetRoot)}`);
     }
     findings.push(`Registry path: ${registryPath()}`);
     return findings;
@@ -52,7 +50,7 @@ export class RoleService {
 
   async createProject(input: CreateProjectInput): Promise<ProjectConfig> {
     const root = path.resolve(input.projectRoot);
-    if (await pathExists(projectConfigPath(root))) {
+    if (await hasManagedProjectConfig(root)) {
       throw new Error(`Project already exists at ${root}`);
     }
 
@@ -65,7 +63,7 @@ export class RoleService {
     const registry = await loadRegistry();
     const projects: ProjectConfig[] = [];
     for (const entry of registry.projects) {
-      if (!(await pathExists(projectConfigPath(entry.root)))) {
+      if (!(await hasManagedProjectConfig(entry.root))) {
         continue;
       }
       projects.push(await loadProjectConfig(entry.root));
@@ -158,7 +156,7 @@ export class RoleService {
       );
     }
 
-    await ensureDir(path.dirname(controllerLogPath(input.projectRoot)));
+    await ensureDir(path.dirname(await resolveControllerLogPath(input.projectRoot)));
     const pid = await spawnLoopProcess(this.cliEntrypoint, input, runtime.projectId);
     runtime.loop.status = "running";
     runtime.loop.pid = pid;
@@ -203,7 +201,7 @@ export class RoleService {
 
   private async resolveProjectSelector(selector: string): Promise<string> {
     const resolved = path.resolve(selector);
-    if (await pathExists(projectConfigPath(resolved))) {
+    if (await hasManagedProjectConfig(resolved)) {
       return resolved;
     }
 

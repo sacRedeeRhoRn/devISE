@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { renderMcpBlock, upsertNamedTomlTable } from "../src/lib/install.js";
+import { removeNamedTomlTable, renderMcpBlock, upsertNamedTomlTable } from "../src/lib/install.js";
 
 test("upsertNamedTomlTable appends missing table", () => {
   const initial = 'model = "gpt-5.4"\n';
@@ -29,5 +29,19 @@ apps = true
   assert.equal(updated.match(/\[mcp_servers\.devise\]/g)?.length, 1);
   assert.match(updated, /\/new\/path\.js/);
   assert.doesNotMatch(updated, /\/old\/path\.js/);
+  assert.match(updated, /\[features\]/);
+});
+
+test("removeNamedTomlTable removes legacy block and preserves neighbors", () => {
+  const initial = `[mcp_servers.codex_role]
+command = "node"
+args = ["/old/path.js", "serve"]
+
+[features]
+apps = true
+`;
+  const updated = removeNamedTomlTable(initial, "mcp_servers.codex_role");
+
+  assert.doesNotMatch(updated, /\[mcp_servers\.codex_role\]/);
   assert.match(updated, /\[features\]/);
 });
