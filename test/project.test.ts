@@ -53,6 +53,8 @@ test("createProjectFiles writes a developer-debugger schema-v3 project with char
   assert.equal(project.kind, "managed_project");
   assert.ok(project.charter);
   assert.equal(project.charter?.domain, "Software Systems");
+  assert.equal(project.loop.max_iterations, null);
+  assert.equal(project.loop.stagnation_limit, null);
   assert.match(project.roles.developer?.persona?.title ?? "", /Principal Delivery Engineer/);
   assert.ok((project.roles.developer?.persona?.exemplars.length ?? 0) >= 1);
 
@@ -103,6 +105,8 @@ test("createProjectFiles writes a scientist-modeller schema-v3 project", async (
   assert.equal(project.loop_kind, "scientist-modeller");
   assert.equal(project.git.role_branch, "devise/project/modeller".replace("project", project.project.id));
   assert.equal(project.charter?.domain, "Quantum Transport");
+  assert.equal(project.loop.max_iterations, null);
+  assert.equal(project.loop.stagnation_limit, null);
   assert.match(project.roles.scientist?.persona?.exemplars.join(", ") ?? "", /Landauer|Anderson|Datta/);
 
   const spec = await fs.readFile(specPath(projectRoot), "utf8");

@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { observableTurnEventsForTest, roleOutputSchemasForTest } from "../src/lib/controller.js";
+import {
+  connectivityIssueFromTextsForTest,
+  observableTurnEventsForTest,
+  roleOutputSchemasForTest,
+} from "../src/lib/controller.js";
 
 test("role output schemas require every property and allow nullable optional fields", () => {
   for (const schema of Object.values(roleOutputSchemasForTest)) {
@@ -136,4 +140,16 @@ test("observable turn events promote reasoning snapshots into structured events"
   assert.equal(events[0]?.reasoning?.current_step, "Check the watch stream");
   assert.equal(events[1]?.kind, "commentary");
   assert.match(events[1]?.message ?? "", /controller churn/);
+});
+
+test("connectivity issue detection recognizes transient outage signals but ignores normal blockers", () => {
+  const transient = connectivityIssueFromTextsForTest([
+    "ssh: Could not resolve hostname cluster.example.org: Temporary failure in name resolution",
+  ]);
+  const normal = connectivityIssueFromTextsForTest([
+    "Acceptance criteria are not met yet because the parity delta is still too large.",
+  ]);
+
+  assert.match(transient ?? "", /Temporary failure in name resolution/);
+  assert.equal(normal, undefined);
 });

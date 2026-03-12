@@ -199,16 +199,19 @@ export class CodexAppServerClient extends EventEmitter {
 
   async waitForTurnCompletion(
     threadId: string,
-    timeoutMs = 30 * 60 * 1000,
+    timeoutMs?: number | null,
     priorTurnCount = 0,
   ): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       let pollTimer: NodeJS.Timeout | undefined;
       let settled = false;
-      const timeout = setTimeout(() => {
-        cleanup();
-        reject(new Error(`Timed out waiting for turn completion on thread ${threadId}`));
-      }, timeoutMs);
+      const shouldTimeout = typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0;
+      const timeout = shouldTimeout
+        ? setTimeout(() => {
+            cleanup();
+            reject(new Error(`Timed out waiting for turn completion on thread ${threadId}`));
+          }, timeoutMs)
+        : undefined;
 
       const onNotification = (notification: JsonRpcNotification) => {
         if (notification.method === "thread/status/changed") {
@@ -236,7 +239,9 @@ export class CodexAppServerClient extends EventEmitter {
 
       const cleanup = () => {
         settled = true;
-        clearTimeout(timeout);
+        if (timeout) {
+          clearTimeout(timeout);
+        }
         if (pollTimer) {
           clearTimeout(pollTimer);
         }

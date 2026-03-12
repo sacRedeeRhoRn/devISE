@@ -71,6 +71,8 @@ Each new managed project stores schema v3 metadata under `.devise/`:
 - `commands.monitor_until`
 - `commands.monitor_timeout_seconds`
 
+If `commands.monitor_timeout_seconds` is omitted, monitoring is unbounded and should continue until a caveat appears or the monitored process ends.
+
 `scientist-modeller` projects use:
 
 - `commands.setup`
@@ -99,6 +101,8 @@ Each new managed project stores schema v3 metadata under `.devise/`:
 
 - New managed projects use schema version 3 with generated charter and persona data. Older v2 managed projects remain usable on their legacy path and are not auto-upgraded.
 - Portfolio containers are registry-only organizational entries. They are non-runnable and only provide defaults that are copied into a child project at creation time.
+- The managed loop no longer has built-in iteration, stagnation, or per-turn time caps. It runs until completion, a real block, manual landing, or process death.
+- Transient connectivity failures are treated as recoverable for up to one hour. During that grace window the active role keeps retrying instead of blocking the loop immediately.
 - `status` accepts either a project root or a registered project id.
 - The dashboard shows observable progress only: structured reasoning snapshots, role commentary, command activity, handoff/report excerpts, commits, and loop events. It does not expose hidden chain-of-thought.
 - Landing keeps role assignments but clears the staged launch, so the next automatic run must be re-armed from `/role`.

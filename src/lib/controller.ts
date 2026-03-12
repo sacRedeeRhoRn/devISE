@@ -43,6 +43,9 @@ type ResolvedLoopStartInput = LoopStartInput & {
   task: string;
 };
 
+const CONNECTIVITY_GRACE_MS = 60 * 60 * 1000;
+const CONNECTIVITY_RETRY_DELAY_MS = 30 * 1000;
+
 const ROLE_OUTPUT_SCHEMAS: Record<RoleKind, Record<string, unknown>> = {
   developer: strictObjectSchema({
     status: { type: "string", enum: ["green", "blocked"] },
@@ -152,19 +155,13 @@ export async function runLoop(
   });
 
   const client = new CodexAppServerClient();
-  const previousOutcomeByRole = new Map<RoleKind, string>();
   let currentRole: RoleKind = input.startRole;
-  let stagnationCount = 0;
 
   try {
     await client.connect();
     await hydrateRoleThreads(repoRoot, client, project, runtime);
 
-    for (
-      let iteration = runtime.loop.iteration + 1;
-      iteration <= project.loop.max_iterations;
-      iteration += 1
-    ) {
+    for (let iteration = runtime.loop.iteration + 1; ; iteration += 1) {
       runtime.loop.iteration = iteration;
       runtime.loop.lastRole = currentRole;
       await saveRuntimeState(runtime);
@@ -178,7 +175,8 @@ export async function runLoop(
       });
 
       await ensureManagedBranch(project.project.root, project.git.role_branch);
-      const result = await runRoleTurn(
+      const hadConnectivityIssue = Boolean(runtime.loop.connectivityIssueSince);
+      const result = await runRoleTurnWithConnectivityGrace(
         repoRoot,
         client,
         project,
@@ -186,22 +184,17 @@ export async function runLoop(
         currentRole,
         iteration,
       );
-
-      const artifactPath = result.report_path ?? result.handoff_report_path;
-      const recordKey = JSON.stringify({
-        role: currentRole,
-        status: result.status,
-        summary: result.summary,
-        commit: result.commit_sha ?? "",
-        artifactPath: artifactPath ?? "",
-      });
-
-      if (previousOutcomeByRole.get(currentRole) === recordKey) {
-        stagnationCount += 1;
-      } else {
-        stagnationCount = 0;
+      clearConnectivityIssue(runtime);
+      if (hadConnectivityIssue) {
+        await appendWatchEvent(project.project.root, {
+          kind: "commentary",
+          iteration,
+          role: currentRole,
+          status: "running",
+          message: `${capitalizeRole(currentRole)} recovered from the connectivity outage and resumed normal work.`,
+        });
       }
-      previousOutcomeByRole.set(currentRole, recordKey);
+      const artifactPath = artifactPathFromResult(result);
 
       runtime.history.push({
         iteration,
@@ -215,22 +208,6 @@ export async function runLoop(
       runtime.loop.lastCommitSha = result.commit_sha ?? runtime.loop.lastCommitSha;
       runtime.loop.lastReportPath = artifactPath ?? runtime.loop.lastReportPath;
       await saveRuntimeState(runtime);
-
-      if (stagnationCount >= project.loop.stagnation_limit) {
-        runtime.loop.status = "failed";
-        runtime.loop.lastError = `Loop stagnated after ${project.loop.stagnation_limit + 1} repeated ${currentRole} outcomes`;
-        runtime.loop.endedAt = new Date().toISOString();
-        runtime.loop.pid = undefined;
-        await saveRuntimeState(runtime);
-        await appendWatchEvent(project.project.root, {
-          kind: "loop_failed",
-          iteration,
-          role: currentRole,
-          status: "failed",
-          message: `Loop failed: ${runtime.loop.lastError}`,
-        });
-        return runtime;
-      }
 
       if (result.status === "blocked") {
         runtime.loop.status = "blocked";
@@ -265,18 +242,6 @@ export async function runLoop(
 
       currentRole = counterpartRole(project, currentRole);
     }
-
-    runtime.loop.status = "failed";
-    runtime.loop.lastError = `Reached max_iterations=${project.loop.max_iterations}`;
-    runtime.loop.endedAt = new Date().toISOString();
-    runtime.loop.pid = undefined;
-    await saveRuntimeState(runtime);
-    await appendWatchEvent(project.project.root, {
-      kind: "loop_failed",
-      status: "failed",
-      message: `Loop failed: ${runtime.loop.lastError}`,
-    });
-    return runtime;
   } catch (error) {
     runtime.loop.status = "failed";
     runtime.loop.lastError = error instanceof Error ? error.message : String(error);
@@ -404,7 +369,7 @@ async function runRoleTurn(
   );
   let thread: ThreadLike;
   try {
-    await client.waitForTurnCompletion(roleSession.threadId, 30 * 60 * 1000, priorTurnCount);
+    await client.waitForTurnCompletion(roleSession.threadId, undefined, priorTurnCount);
     thread = await readTerminalTurnSnapshot(client, roleSession.threadId, priorTurnCount);
   } finally {
     await activityMonitor.stop();
@@ -455,6 +420,66 @@ async function runRoleTurn(
   }
   await appendControllerLog(project.project.root, role, iteration, parsed);
   return parsed;
+}
+
+async function runRoleTurnWithConnectivityGrace(
+  repoRoot: string,
+  client: CodexAppServerClient,
+  project: ProjectConfig,
+  runtime: RuntimeState,
+  role: RoleKind,
+  iteration: number,
+): Promise<ControllerTurnResult> {
+  for (;;) {
+    try {
+      const result = await runRoleTurn(
+        repoRoot,
+        client,
+        project,
+        runtime,
+        role,
+        iteration,
+      );
+      const connectivityIssue = connectivityIssueFromTurnResult(result);
+      if (!connectivityIssue) {
+        return result;
+      }
+
+      const shouldRetry = await applyConnectivityGrace(
+        project.project.root,
+        runtime,
+        role,
+        iteration,
+        connectivityIssue,
+      );
+      if (!shouldRetry) {
+        return {
+          ...result,
+          status: "blocked",
+          blocking_reason:
+            result.blocking_reason ?? `Connectivity outage persisted beyond the one-hour grace window: ${connectivityIssue}`,
+        };
+      }
+    } catch (error) {
+      const connectivityIssue = connectivityIssueFromUnknown(error);
+      if (!connectivityIssue) {
+        throw error;
+      }
+
+      const shouldRetry = await applyConnectivityGrace(
+        project.project.root,
+        runtime,
+        role,
+        iteration,
+        connectivityIssue,
+      );
+      if (!shouldRetry) {
+        throw error;
+      }
+    }
+
+    await delay(CONNECTIVITY_RETRY_DELAY_MS);
+  }
 }
 
 async function buildRoleTurnPrompt(
@@ -571,7 +596,11 @@ function renderRoleCommandSections(project: ProjectConfig, role: RoleKind): stri
       sections.push(`Monitor commands:\n${renderCommandList(project.commands.monitor)}`);
       sections.push(`Monitoring caveats:\n${renderBulletList(project.commands.monitor_until)}`);
       sections.push(
-        `Monitoring timeout seconds:\n${String(project.commands.monitor_timeout_seconds ?? 300)}`,
+        `Monitoring timeout seconds:\n${
+          project.commands.monitor_timeout_seconds == null
+            ? "Unbounded"
+            : String(project.commands.monitor_timeout_seconds)
+        }`,
       );
       break;
     case "scientist":
@@ -927,6 +956,114 @@ function counterpartRole(project: ProjectConfig, role: RoleKind): RoleKind {
   const [first, second] = activeRolesForProject(project);
   return role === first ? second : first;
 }
+
+async function applyConnectivityGrace(
+  projectRoot: string,
+  runtime: RuntimeState,
+  role: RoleKind,
+  iteration: number,
+  issue: string,
+): Promise<boolean> {
+  const now = new Date();
+  const existingStart = runtime.loop.connectivityIssueSince
+    ? Date.parse(runtime.loop.connectivityIssueSince)
+    : Number.NaN;
+  const startedAt = Number.isFinite(existingStart) ? existingStart : now.getTime();
+  const graceUntil = startedAt + CONNECTIVITY_GRACE_MS;
+  runtime.loop.connectivityIssueSince = new Date(startedAt).toISOString();
+  runtime.loop.connectivityGraceUntil = new Date(graceUntil).toISOString();
+  runtime.loop.connectivityIssue = issue;
+  runtime.loop.lastError = `Connectivity issue under grace until ${runtime.loop.connectivityGraceUntil}: ${issue}`;
+  await saveRuntimeState(runtime);
+
+  if (now.getTime() <= graceUntil) {
+    await appendWatchEvent(projectRoot, {
+      kind: "commentary",
+      iteration,
+      role,
+      status: "running",
+      message: `${capitalizeRole(role)} hit a transient connectivity issue and will keep retrying until ${runtime.loop.connectivityGraceUntil}: ${issue}`,
+    });
+    return true;
+  }
+
+  await appendWatchEvent(projectRoot, {
+    kind: "commentary",
+    iteration,
+    role,
+    status: "blocked",
+    message: `${capitalizeRole(role)} exhausted the one-hour connectivity grace window: ${issue}`,
+  });
+  return false;
+}
+
+function clearConnectivityIssue(runtime: RuntimeState): void {
+  if (!runtime.loop.connectivityIssueSince && !runtime.loop.connectivityIssue) {
+    return;
+  }
+
+  runtime.loop.connectivityIssueSince = undefined;
+  runtime.loop.connectivityGraceUntil = undefined;
+  runtime.loop.connectivityIssue = undefined;
+  if (runtime.loop.lastError?.startsWith("Connectivity issue under grace until ")) {
+    runtime.loop.lastError = undefined;
+  }
+}
+
+function connectivityIssueFromTurnResult(
+  result: ControllerTurnResult,
+): string | undefined {
+  if (result.status !== "blocked") {
+    return undefined;
+  }
+
+  return connectivityIssueFromTexts([
+    result.blocking_reason,
+    result.summary,
+    ...(result.issues ?? []),
+  ]);
+}
+
+function connectivityIssueFromUnknown(error: unknown): string | undefined {
+  const message = error instanceof Error ? error.message : String(error);
+  return connectivityIssueFromTexts([message]);
+}
+
+function connectivityIssueFromTexts(values: Array<string | undefined>): string | undefined {
+  const text = values
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  if (!text) {
+    return undefined;
+  }
+
+  const patterns = [
+    /\binternet\b/i,
+    /\bnetwork\b/i,
+    /\boffline\b/i,
+    /\bdns\b/i,
+    /\btemporary failure\b/i,
+    /\bname resolution\b/i,
+    /\bhost unreachable\b/i,
+    /\bno route to host\b/i,
+    /\bcould not resolve hostname\b/i,
+    /\benotfound\b/i,
+    /\beai_again\b/i,
+    /\beconnreset\b/i,
+    /\beconnrefused\b/i,
+    /\bconnection (?:timed out|reset|refused|closed)\b/i,
+    /\btls handshake timeout\b/i,
+    /\bproxyconnect\b/i,
+    /\bssh\b.*\b(unreachable|timed out|resolve|refused|reset)\b/i,
+    /\bqsub\b.*\b(unreachable|timed out|refused|connection|resolve)\b/i,
+    /\bweb\b.*\b(unreachable|timed out|offline)\b/i,
+  ];
+
+  return patterns.some((pattern) => pattern.test(text)) ? text.replace(/\s+/g, " ").trim() : undefined;
+}
+
+export const connectivityIssueFromTextsForTest = connectivityIssueFromTexts;
 
 function isBuilderRole(project: ProjectConfig, role: RoleKind): boolean {
   return builderRoleForLoopKind(project.loop_kind) === role;

@@ -142,6 +142,31 @@ test("waitForTurnCompletion polls thread state when notifications are missing", 
   }
 });
 
+test("waitForTurnCompletion supports an unbounded wait when timeout is omitted", async () => {
+  const client = new CodexAppServerClient({
+    spawnImpl() {
+      return createFakeAppServerChild((request, child) => {
+        if (request.method === "turn/start") {
+          setTimeout(() => {
+            child.notify("turn/completed", { threadId: "thread-1" });
+          }, 20);
+          child.respond(request.id, { result: {} });
+          return true;
+        }
+
+        return false;
+      });
+    },
+  });
+
+  try {
+    await client.startTurn({ threadId: "thread-1", input: [] });
+    await client.waitForTurnCompletion("thread-1", undefined, 0);
+  } finally {
+    await client.close();
+  }
+});
+
 test("CodexAppServerClient approves managed access requests", async () => {
   let fakeChild: FakeAppServerChild | undefined;
   const client = new CodexAppServerClient({

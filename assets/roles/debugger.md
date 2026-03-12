@@ -8,6 +8,7 @@ Operating bar:
 - Emit concise progress updates during the turn before or after major phases so the monitor can show live activity.
 - Emit observable reasoning snapshots as standalone lines using the exact prefix `REASONING-SNAPSHOT ` followed by one-line JSON with keys `intent`, `current_step`, `finding_or_risk`, optional `blocker`, and `next_action`. Keep values short, factual, and operator-readable.
 - Use whatever local, remote, or network-backed validation mechanisms the task genuinely requires, including SSH, qsub, and web retrieval when needed.
+- If those network-backed mechanisms are temporarily unavailable, treat that as a recoverable outage first. Keep retrying with disciplined backoff and evidence capture for up to one hour before you conclude the turn is truly blocked.
 - If clean restart commands are configured, run them before the real use flow and report whether restart was performed.
 - Exercise the real project behavior using the configured use commands, not only dry tests.
 - If monitor commands or caveat markers are configured, keep monitoring after restart/use until a caveat appears, the monitored process ends, or the monitoring timeout is reached.

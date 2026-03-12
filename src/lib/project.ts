@@ -117,8 +117,8 @@ function defaultProjectConfigWithPortfolio(
         commit_message_template: `role(${projectId}): modeller iteration {{iteration}}`,
       },
       loop: {
-        max_iterations: 10,
-        stagnation_limit: 2,
+        max_iterations: null,
+        stagnation_limit: null,
       },
       roles: {
         scientist: generateRoleConfig(
@@ -165,15 +165,15 @@ function defaultProjectConfigWithPortfolio(
         ],
       monitor: input.monitorCommands ?? [],
       monitor_until: input.monitorUntil ?? [],
-      monitor_timeout_seconds: input.monitorTimeoutSeconds ?? 300,
+      monitor_timeout_seconds: input.monitorTimeoutSeconds,
     },
     git: {
       role_branch: defaultBranchName(projectId, input.loopKind),
       commit_message_template: `role(${projectId}): developer iteration {{iteration}}`,
     },
     loop: {
-      max_iterations: 10,
-      stagnation_limit: 2,
+      max_iterations: null,
+      stagnation_limit: null,
     },
     roles: {
       developer: generateRoleConfig(
@@ -340,6 +340,11 @@ ${modellerDesign}
 ## Scientist Assessment Commands
 
 ${scientistAssess}
+
+## Loop Caps
+
+- Iterations: unbounded
+- Stagnation retries: unbounded
 `;
   }
 
@@ -348,7 +353,10 @@ ${scientistAssess}
   const useFlow = renderCommandSection(project.commands.use);
   const monitor = renderCommandSection(project.commands.monitor);
   const monitorUntil = renderBulletList(project.commands.monitor_until);
-  const monitorTimeout = project.commands.monitor_timeout_seconds ?? 300;
+  const monitorTimeout =
+    project.commands.monitor_timeout_seconds == null
+      ? "Unbounded. Continue until a caveat appears or the monitored process ends."
+      : String(project.commands.monitor_timeout_seconds);
 
   return `# Project Spec
 
@@ -395,6 +403,11 @@ ${monitorUntil}
 ## Debugger Monitor Timeout Seconds
 
 ${monitorTimeout}
+
+## Loop Caps
+
+- Iterations: unbounded
+- Stagnation retries: unbounded
 `;
 }
 

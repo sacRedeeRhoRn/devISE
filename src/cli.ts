@@ -72,6 +72,13 @@ async function main(): Promise<void> {
       if (status.runtime.loop.lastCommitSha) {
         console.log(`last_commit: ${status.runtime.loop.lastCommitSha}`);
       }
+      if (status.runtime.loop.connectivityIssueSince) {
+        console.log(`connectivity_issue_since: ${status.runtime.loop.connectivityIssueSince}`);
+        console.log(`connectivity_grace_until: ${status.runtime.loop.connectivityGraceUntil ?? "none"}`);
+      }
+      if (status.runtime.loop.connectivityIssue) {
+        console.log(`connectivity_issue: ${status.runtime.loop.connectivityIssue}`);
+      }
       if (status.runtime.loop.lastError) {
         console.log(`last_error: ${status.runtime.loop.lastError}`);
       }

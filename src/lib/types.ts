@@ -74,8 +74,8 @@ export interface RolePersona {
 }
 
 export interface LoopConfig {
-  max_iterations: number;
-  stagnation_limit: number;
+  max_iterations?: number | null;
+  stagnation_limit?: number | null;
 }
 
 export interface GitConfig {
@@ -187,6 +187,9 @@ export interface RuntimeState {
     lastCommitSha?: string;
     lastReportPath?: string;
     lastError?: string;
+    connectivityIssue?: string;
+    connectivityIssueSince?: string;
+    connectivityGraceUntil?: string;
   };
   history: IterationRecord[];
 }

@@ -55,6 +55,8 @@ interface RoleServiceOptions {
   createClient?: () => CodexAppServerClient;
 }
 
+const CONNECTIVITY_STALE_MS = 60 * 60 * 1000;
+
 export class RoleService {
   constructor(
     private readonly repoRoot: string,
@@ -476,7 +478,7 @@ export class RoleService {
       approvalPolicy: "never",
       personality: "pragmatic",
     });
-    await client.waitForTurnCompletion(threadId, 5 * 60 * 1000, priorTurnCount);
+    await client.waitForTurnCompletion(threadId, undefined, priorTurnCount);
   }
 }
 
@@ -661,7 +663,7 @@ function isStale(lastEventAt?: string): boolean {
   if (!lastEventAt) {
     return false;
   }
-  return Date.now() - Date.parse(lastEventAt) > 5 * 60 * 1000;
+  return Date.now() - Date.parse(lastEventAt) > CONNECTIVITY_STALE_MS;
 }
 
 function isRoleKind(value: string): value is RoleKind {
