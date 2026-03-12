@@ -175,33 +175,79 @@ export class CodexAppServerClient extends EventEmitter {
   async waitForTurnCompletion(
     threadId: string,
     timeoutMs = 30 * 60 * 1000,
+    priorTurnCount = 0,
   ): Promise<void> {
     await new Promise<void>((resolve, reject) => {
+      let pollTimer: NodeJS.Timeout | undefined;
+      let settled = false;
       const timeout = setTimeout(() => {
         cleanup();
         reject(new Error(`Timed out waiting for turn completion on thread ${threadId}`));
       }, timeoutMs);
 
       const onNotification = (notification: JsonRpcNotification) => {
-        if (notification.method !== "turn/completed") {
+        if (notification.method === "thread/status/changed") {
+          const payload = notification.params as {
+            threadId?: string;
+            status?: { type?: string };
+          };
+          if (payload.threadId === threadId && payload.status?.type === "idle") {
+            cleanup();
+            resolve();
+          }
+          return;
+        }
+
+        if (!["turn/completed", "turn/failed", "turn/interrupted"].includes(notification.method)) {
           return;
         }
 
         const payload = notification.params as { threadId?: string };
-        if (payload.threadId !== threadId) {
-          return;
+        if (payload.threadId === threadId) {
+          cleanup();
+          resolve();
         }
-
-        cleanup();
-        resolve();
       };
 
       const cleanup = () => {
+        settled = true;
         clearTimeout(timeout);
+        if (pollTimer) {
+          clearTimeout(pollTimer);
+        }
         this.off("notification", onNotification);
       };
 
+      const pollThreadState = async (): Promise<void> => {
+        try {
+          const thread = await this.readThread(threadId, true);
+          const lastTurn = thread.turns.at(-1);
+          if (
+            thread.turns.length > priorTurnCount &&
+            lastTurn &&
+            ["completed", "failed", "interrupted"].includes(lastTurn.status)
+          ) {
+            cleanup();
+            resolve();
+            return;
+          }
+        } catch (error) {
+          cleanup();
+          reject(error instanceof Error ? error : new Error(String(error)));
+          return;
+        }
+
+        if (!settled) {
+          pollTimer = setTimeout(() => {
+            void pollThreadState();
+          }, 1000);
+        }
+      };
+
       this.on("notification", onNotification);
+      pollTimer = setTimeout(() => {
+        void pollThreadState();
+      }, 1000);
     });
   }
 

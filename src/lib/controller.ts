@@ -31,32 +31,15 @@ type ResolvedLoopStartInput = LoopStartInput & {
 };
 
 const ROLE_OUTPUT_SCHEMAS: Record<RoleKind, Record<string, unknown>> = {
-  developer: {
-    type: "object",
-    additionalProperties: false,
-    required: ["status", "dry_test_passed", "summary", "handoff_report_path"],
-    properties: {
+  developer: strictObjectSchema({
       status: { type: "string", enum: ["green", "blocked"] },
       dry_test_passed: { type: "boolean" },
       summary: { type: "string" },
       handoff_report_path: { type: "string" },
-      commit_sha: { type: "string" },
-      blocking_reason: { type: "string" },
-    },
-  },
-  debugger: {
-    type: "object",
-    additionalProperties: false,
-    required: [
-      "status",
-      "use_passed",
-      "summary",
-      "report_path",
-      "issues",
-      "restart_performed",
-      "monitor_result",
-    ],
-    properties: {
+      commit_sha: nullableStringSchema(),
+      blocking_reason: nullableStringSchema(),
+    }),
+  debugger: strictObjectSchema({
       status: { type: "string", enum: ["goal_met", "needs_fix", "blocked"] },
       use_passed: { type: "boolean" },
       summary: { type: "string" },
@@ -66,15 +49,16 @@ const ROLE_OUTPUT_SCHEMAS: Record<RoleKind, Record<string, unknown>> = {
         type: "string",
         enum: ["not_configured", "caveat_observed", "process_ended", "timeout_reached"],
       },
-      observed_caveat: { type: "string" },
+      observed_caveat: nullableStringSchema(),
       issues: {
         type: "array",
         items: { type: "string" },
       },
-      blocking_reason: { type: "string" },
-    },
-  },
+      blocking_reason: nullableStringSchema(),
+    }),
 };
+
+export const roleOutputSchemasForTest = ROLE_OUTPUT_SCHEMAS;
 
 export async function spawnLoopProcess(
   cliEntrypoint: string,
@@ -215,6 +199,13 @@ export async function runLoop(
     runtime.loop.pid = undefined;
     await saveRuntimeState(runtime);
     return runtime;
+  } catch (error) {
+    runtime.loop.status = "failed";
+    runtime.loop.lastError = error instanceof Error ? error.message : String(error);
+    runtime.loop.endedAt = new Date().toISOString();
+    runtime.loop.pid = undefined;
+    await saveRuntimeState(runtime);
+    throw error;
   } finally {
     await client.close();
   }
@@ -295,6 +286,8 @@ async function runRoleTurn(
     developerInstructions: await loadRoleBaseInstructions(repoRoot, role),
     persistExtendedHistory: true,
   });
+  const priorThread = await client.readThread(roleSession.threadId, true);
+  const priorTurnCount = priorThread.turns.length;
 
   const prompt = await buildRoleTurnPrompt(
     repoRoot,
@@ -320,9 +313,8 @@ async function runRoleTurn(
     outputSchema: ROLE_OUTPUT_SCHEMAS[role],
     personality: "pragmatic",
   });
-  await client.waitForTurnCompletion(roleSession.threadId);
-
-  const thread = await client.readThread(roleSession.threadId, true);
+  await client.waitForTurnCompletion(roleSession.threadId, 30 * 60 * 1000, priorTurnCount);
+  const thread = await readTerminalTurnSnapshot(client, roleSession.threadId, priorTurnCount);
   const lastTurn = thread.turns.at(-1);
   if (!lastTurn) {
     throw new Error(`No completed turn found for ${roleSession.threadId}`);
@@ -442,6 +434,36 @@ function renderBulletList(items?: string[]): string {
   return items.map((item) => `- ${item}`).join("\n");
 }
 
+async function readTerminalTurnSnapshot(
+  client: CodexAppServerClient,
+  threadId: string,
+  priorTurnCount: number,
+): Promise<ThreadLike> {
+  let lastThread: ThreadLike | undefined;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const thread = await client.readThread(threadId, true);
+    lastThread = thread;
+    if (thread.turns.length > priorTurnCount) {
+      const lastTurn = thread.turns.at(-1);
+      if (
+        lastTurn &&
+        ["completed", "failed", "interrupted"].includes(lastTurn.status)
+      ) {
+        return thread;
+      }
+    }
+    await new Promise((resolve) => {
+      setTimeout(resolve, 500);
+    });
+  }
+
+  if (lastThread) {
+    return lastThread;
+  }
+
+  return client.readThread(threadId, true);
+}
+
 function validateDebuggerTurnResult(
   project: ProjectConfig,
   result: ControllerTurnResult,
@@ -470,6 +492,23 @@ function validateDebuggerTurnResult(
 
 export function managedThreadName(projectId: string, role: RoleKind): string {
   return `devISE:${projectId}:${role}`;
+}
+
+function strictObjectSchema(
+  properties: Record<string, Record<string, unknown>>,
+): Record<string, unknown> {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: Object.keys(properties),
+    properties,
+  };
+}
+
+function nullableStringSchema(): Record<string, unknown> {
+  return {
+    type: ["string", "null"],
+  };
 }
 
 function parseControllerTurnResult(text: string): ControllerTurnResult {

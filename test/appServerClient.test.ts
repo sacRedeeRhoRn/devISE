@@ -19,7 +19,28 @@ test("CodexAppServerClient initializes once and serves requests", async () => {
         args: args ?? [],
         options,
       });
-      return createFakeAppServerChild();
+      return createFakeAppServerChild((request, child) => {
+        if (request.method === "thread/list") {
+          child.respond(request.id, {
+            result: {
+              data: [
+                {
+                  id: "thread-1",
+                  preview: "preview",
+                  updatedAt: 0,
+                  cwd: process.cwd(),
+                  source: "cli",
+                  name: null,
+                  agentRole: null,
+                  turns: [],
+                },
+              ],
+            },
+          });
+          return true;
+        }
+        return false;
+      });
     },
   });
 
@@ -35,7 +56,101 @@ test("CodexAppServerClient initializes once and serves requests", async () => {
   }
 });
 
-function createFakeAppServerChild(): ChildProcessWithoutNullStreams {
+test("waitForTurnCompletion resolves when the thread returns to idle", async () => {
+  const client = new CodexAppServerClient({
+    spawnImpl() {
+      return createFakeAppServerChild((request, child) => {
+        if (request.method === "turn/start") {
+          setTimeout(() => {
+            child.notify("thread/status/changed", {
+              threadId: "thread-1",
+              status: { type: "idle" },
+            });
+          }, 20);
+          child.respond(request.id, { result: {} });
+          return true;
+        }
+
+        return false;
+      });
+    },
+  });
+
+  try {
+    await client.startTurn({ threadId: "thread-1", input: [] });
+    await client.waitForTurnCompletion("thread-1", 5000);
+  } finally {
+    await client.close();
+  }
+});
+
+test("waitForTurnCompletion polls thread state when notifications are missing", async () => {
+  let readCount = 0;
+  const client = new CodexAppServerClient({
+    spawnImpl() {
+      return createFakeAppServerChild((request, child) => {
+        if (request.method === "turn/start") {
+          child.respond(request.id, { result: {} });
+          return true;
+        }
+
+        if (request.method === "thread/read") {
+          readCount += 1;
+          child.respond(request.id, {
+            result: {
+              thread: {
+                id: "thread-1",
+                preview: "preview",
+                updatedAt: 0,
+                cwd: process.cwd(),
+                source: "cli",
+                name: null,
+                agentRole: null,
+                turns:
+                  readCount < 2
+                    ? [
+                        {
+                          id: "turn-1",
+                          status: "inProgress",
+                          items: [],
+                        },
+                      ]
+                    : [
+                        {
+                          id: "turn-1",
+                          status: "interrupted",
+                          items: [],
+                        },
+                      ],
+              },
+            },
+          });
+          return true;
+        }
+
+        return false;
+      });
+    },
+  });
+
+  try {
+    await client.startTurn({ threadId: "thread-1", input: [] });
+    await client.waitForTurnCompletion("thread-1", 5000, 0);
+    assert.ok(readCount >= 2);
+  } finally {
+    await client.close();
+  }
+});
+
+function createFakeAppServerChild(
+  onRequest?: (
+    request: { id?: number; method?: string; params?: unknown },
+    child: {
+      respond: (id: number | undefined, payload: Record<string, unknown>) => void;
+      notify: (method: string, params: Record<string, unknown>) => void;
+    },
+  ) => boolean,
+): ChildProcessWithoutNullStreams {
   class FakeChild extends EventEmitter {
     stdin = new PassThrough();
     stdout = new PassThrough();
@@ -98,23 +213,12 @@ function createFakeAppServerChild(): ChildProcessWithoutNullStreams {
         return;
       }
 
-      if (request.method === "thread/list" && request.id) {
-        this.respond(request.id, {
-          result: {
-            data: [
-              {
-                id: "thread-1",
-                preview: "preview",
-                updatedAt: 0,
-                cwd: process.cwd(),
-                source: "cli",
-                name: null,
-                agentRole: null,
-                turns: [],
-              },
-            ],
-          },
-        });
+      if (
+        onRequest?.(request, {
+          respond: (id, payload) => this.respond(id, payload),
+          notify: (method, params) => this.notify(method, params),
+        })
+      ) {
         return;
       }
 
@@ -128,12 +232,22 @@ function createFakeAppServerChild(): ChildProcessWithoutNullStreams {
       }
     }
 
-    private respond(id: number, payload: Record<string, unknown>): void {
+    private respond(id: number | undefined, payload: Record<string, unknown>): void {
       this.stdout.write(
         `${JSON.stringify({
           jsonrpc: "2.0",
           id,
           ...payload,
+        })}\n`,
+      );
+    }
+
+    private notify(method: string, params: Record<string, unknown>): void {
+      this.stdout.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          method,
+          params,
         })}\n`,
       );
     }
