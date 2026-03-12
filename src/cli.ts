@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { RoleService } from "./lib/service.js";
 import { repoRootFromModule } from "./lib/paths.js";
+import { startWatch } from "./lib/watch.js";
 import { startMcpServer } from "./mcp/server.js";
 
 async function main(): Promise<void> {
@@ -117,6 +118,12 @@ async function main(): Promise<void> {
       return;
     }
 
+    case "watch": {
+      const projectRoot = rest[0] ?? process.cwd();
+      await startWatch(service, projectRoot);
+      return;
+    }
+
     case "serve":
       await startMcpServer(service);
       return;
@@ -157,6 +164,7 @@ function printUsage(): never {
   devISE stage-launch --project-root <path> --start-role <developer|debugger> --task <text>
   devISE flight --project-root <path>
   devISE land --project-root <path>
+  devISE watch [project-root|project-id]
   devISE serve
   devISE run-loop --project-root <path> --start-role <developer|debugger> --task <text>`);
   process.exit(1);

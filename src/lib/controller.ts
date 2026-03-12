@@ -106,6 +106,10 @@ export async function runLoop(
   runtime.loop.startRole = input.startRole;
   runtime.loop.lastError = undefined;
   await saveRuntimeState(runtime);
+  await appendControllerEvent(
+    project.project.root,
+    `event=loop_started start_role=${input.startRole} task=${JSON.stringify(input.task)}`,
+  );
 
   const client = new CodexAppServerClient();
   const previousOutcomeByRole = new Map<RoleKind, string>();
@@ -124,6 +128,10 @@ export async function runLoop(
       runtime.loop.iteration = iteration;
       runtime.loop.lastRole = currentRole;
       await saveRuntimeState(runtime);
+      await appendControllerEvent(
+        project.project.root,
+        `iter=${iteration} role=${currentRole} event=turn_started`,
+      );
 
       await ensureManagedBranch(project.project.root, project.git.role_branch);
       const result = await runRoleTurn(
@@ -170,6 +178,10 @@ export async function runLoop(
         runtime.loop.endedAt = new Date().toISOString();
         runtime.loop.pid = undefined;
         await saveRuntimeState(runtime);
+        await appendControllerEvent(
+          project.project.root,
+          `iter=${iteration} role=${currentRole} event=loop_failed reason=${JSON.stringify(runtime.loop.lastError)}`,
+        );
         return runtime;
       }
 
@@ -179,6 +191,10 @@ export async function runLoop(
         runtime.loop.endedAt = new Date().toISOString();
         runtime.loop.pid = undefined;
         await saveRuntimeState(runtime);
+        await appendControllerEvent(
+          project.project.root,
+          `iter=${iteration} role=${currentRole} event=loop_blocked reason=${JSON.stringify(runtime.loop.lastError)}`,
+        );
         return runtime;
       }
 
@@ -187,6 +203,10 @@ export async function runLoop(
         runtime.loop.endedAt = new Date().toISOString();
         runtime.loop.pid = undefined;
         await saveRuntimeState(runtime);
+        await appendControllerEvent(
+          project.project.root,
+          `iter=${iteration} role=${currentRole} event=loop_completed`,
+        );
         return runtime;
       }
 
@@ -198,6 +218,10 @@ export async function runLoop(
     runtime.loop.endedAt = new Date().toISOString();
     runtime.loop.pid = undefined;
     await saveRuntimeState(runtime);
+    await appendControllerEvent(
+      project.project.root,
+      `event=loop_failed reason=${JSON.stringify(runtime.loop.lastError)}`,
+    );
     return runtime;
   } catch (error) {
     runtime.loop.status = "failed";
@@ -205,6 +229,10 @@ export async function runLoop(
     runtime.loop.endedAt = new Date().toISOString();
     runtime.loop.pid = undefined;
     await saveRuntimeState(runtime);
+    await appendControllerEvent(
+      project.project.root,
+      `event=loop_failed reason=${JSON.stringify(runtime.loop.lastError)}`,
+    );
     throw error;
   } finally {
     await client.close();
@@ -588,7 +616,18 @@ async function appendControllerLog(
   iteration: number,
   result: ControllerTurnResult,
 ): Promise<void> {
-  const line = `${new Date().toISOString()} iter=${iteration} role=${role} status=${result.status} summary=${JSON.stringify(result.summary)}\n`;
+  const artifactPath = result.report_path ?? result.handoff_report_path;
+  const line =
+    `${new Date().toISOString()} ` +
+    `iter=${iteration} role=${role} event=turn_completed status=${result.status} ` +
+    `artifact=${JSON.stringify(artifactPath ?? "")} ` +
+    `commit=${JSON.stringify(result.commit_sha ?? "")} ` +
+    `summary=${JSON.stringify(result.summary)}\n`;
+  await fs.appendFile(await resolveControllerLogPath(projectRoot), line, "utf8");
+}
+
+async function appendControllerEvent(projectRoot: string, details: string): Promise<void> {
+  const line = `${new Date().toISOString()} ${details}\n`;
   await fs.appendFile(await resolveControllerLogPath(projectRoot), line, "utf8");
 }
 
