@@ -6,7 +6,9 @@ import { doctor as runDoctor, installAssets } from "./install.js";
 import { ensureDir } from "./fs.js";
 import { registryPath } from "./paths.js";
 import {
+  activeRolesForProject,
   createProjectFiles,
+  ensureRoleAllowedForProject,
   hasManagedProjectConfig,
   loadProjectConfig,
   loadRuntimeState,
@@ -16,15 +18,16 @@ import {
 } from "./project.js";
 import { loadRegistry, upsertRegistryEntry } from "./registry.js";
 import type { InstallResult } from "./install.js";
-import type {
-  AssignmentInput,
-  CreateProjectInput,
-  LoopStartInput,
-  ProjectConfig,
-  RuntimeState,
-  SessionSummary,
-  StageLaunchInput,
-  RoleKind,
+import {
+  allowedStartRolesForLoopKind,
+  type AssignmentInput,
+  type CreateProjectInput,
+  type LoopStartInput,
+  type ProjectConfig,
+  type RuntimeState,
+  type SessionSummary,
+  type StageLaunchInput,
+  type RoleKind,
 } from "./types.js";
 
 interface RoleServiceOptions {
@@ -73,7 +76,11 @@ export class RoleService {
       if (!(await hasManagedProjectConfig(entry.root))) {
         continue;
       }
-      projects.push(await loadProjectConfig(entry.root));
+      try {
+        projects.push(await loadProjectConfig(entry.root));
+      } catch {
+        continue;
+      }
     }
     return projects;
   }
@@ -106,6 +113,7 @@ export class RoleService {
     const projectRoot = path.resolve(input.projectRoot);
     const project = await loadProjectConfig(projectRoot);
     const runtime = await loadRuntimeState(projectRoot);
+    ensureRoleAllowedForProject(project, input.role);
     const client = new CodexAppServerClient();
 
     try {
@@ -156,9 +164,11 @@ export class RoleService {
   }
 
   async stageLaunch(input: StageLaunchInput): Promise<RuntimeState> {
+    const project = await loadProjectConfig(input.projectRoot);
     const runtime = await loadRuntimeState(input.projectRoot);
     syncControllerState(runtime);
-    ensureBothRolesAssigned(runtime);
+    ensureValidStartRole(project, input.startRole);
+    ensureActiveRolesAssigned(project, runtime);
     const task = input.task.trim();
     if (!task) {
       throw new Error(`stageLaunch requires a non-empty task`);
@@ -186,6 +196,7 @@ export class RoleService {
   }
 
   async startLoop(input: LoopStartInput): Promise<RuntimeState> {
+    const project = await loadProjectConfig(input.projectRoot);
     const runtime = await loadRuntimeState(input.projectRoot);
     const controllerAlive = syncControllerState(runtime);
     const startRole = input.startRole ?? runtime.launch.stagedStartRole;
@@ -195,13 +206,14 @@ export class RoleService {
         `Project ${runtime.projectId} already has a running controller (pid ${runtime.loop.pid})`,
       );
     }
-    if (startRole !== "developer" && startRole !== "debugger") {
+    if (!startRole) {
       throw new Error(`startLoop requires a staged or explicit startRole`);
     }
+    ensureValidStartRole(project, startRole);
     if (!nextTask) {
       throw new Error(`startLoop requires a staged or explicit non-empty task`);
     }
-    ensureBothRolesAssigned(runtime);
+    ensureActiveRolesAssigned(project, runtime);
 
     await ensureDir(path.dirname(await resolveControllerLogPath(input.projectRoot)));
     const pid = await (this.options.spawnLoop ?? spawnLoopProcess)(
@@ -317,9 +329,20 @@ function syncControllerState(runtime: RuntimeState): boolean {
   return controllerAlive;
 }
 
-function ensureBothRolesAssigned(runtime: RuntimeState): void {
-  const missing = (["developer", "debugger"] as const).filter((role) => !runtime.roles[role]);
+function ensureActiveRolesAssigned(project: ProjectConfig, runtime: RuntimeState): void {
+  const missing = activeRolesForProject(project).filter((role) => !runtime.roles[role]);
   if (missing.length > 0) {
-    throw new Error(`Both roles must be assigned before starting the loop (missing: ${missing.join(", ")})`);
+    throw new Error(
+      `Both roles for ${project.loop_kind} must be assigned before starting the loop (missing: ${missing.join(", ")})`,
+    );
+  }
+}
+
+function ensureValidStartRole(project: ProjectConfig, startRole: RoleKind): void {
+  const allowed = allowedStartRolesForLoopKind(project.loop_kind);
+  if (!allowed.includes(startRole)) {
+    throw new Error(
+      `startRole ${startRole} is not valid for ${project.loop_kind} projects (allowed: ${allowed.join(", ")})`,
+    );
   }
 }

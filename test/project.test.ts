@@ -10,29 +10,28 @@ import {
   loadProjectConfig,
   loadRuntimeState,
   makeProjectId,
-  saveRuntimeState,
   sanitizeId,
 } from "../src/lib/project.js";
-import {
-  legacyRuntimeStatePath,
-  projectConfigPath,
-  projectStateDir,
-  runtimeStatePath,
-  specPath,
-} from "../src/lib/paths.js";
+import { projectConfigPath, runtimeStatePath, specPath } from "../src/lib/paths.js";
 import { managedThreadName } from "../src/lib/controller.js";
 
-test("sanitizeId normalizes project ids", () => {
+test("sanitizeId and managed naming normalize project ids", () => {
   assert.equal(sanitizeId("My Fancy Project!!"), "my-fancy-project");
   assert.equal(makeProjectId("/tmp/Hello World"), "hello-world");
   assert.equal(defaultBranchName("hello-world"), "devise/hello-world/developer");
+  assert.equal(
+    defaultBranchName("hello-world", "scientist-modeller"),
+    "devise/hello-world/modeller",
+  );
   assert.equal(managedThreadName("hello-world", "debugger"), "devISE:hello-world:debugger");
+  assert.equal(managedThreadName("hello-world", "scientist"), "devISE:hello-world:scientist");
 });
 
-test("createProjectFiles writes spec, config, and runtime", async () => {
-  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-project-"));
-  const input = {
+test("createProjectFiles writes a developer-debugger schema-v2 project", async () => {
+  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-project-dev-"));
+  const { project, runtime } = await createProjectFiles({
     projectRoot,
+    loopKind: "developer-debugger",
     goal: "Ship a looped role workflow",
     acceptance: ["Dry tests pass", "Real use passes"],
     dryTestCommands: ["npm test"],
@@ -42,71 +41,96 @@ test("createProjectFiles writes spec, config, and runtime", async () => {
     monitorUntil: ["ERROR", "panic", "server exited"],
     monitorTimeoutSeconds: 120,
     setupCommands: ["npm install"],
+    developerSpecialization: "TypeScript backend and CLI delivery",
     controllerThreadId: "thread-123",
-  };
+  });
 
-  const { project, runtime } = await createProjectFiles(input);
+  assert.equal(project.version, 2);
+  assert.equal(project.loop_kind, "developer-debugger");
   assert.equal(project.project.root, projectRoot);
+  assert.equal(runtime.version, 2);
   assert.equal(runtime.controllerThreadId, "thread-123");
 
   const spec = await fs.readFile(specPath(projectRoot), "utf8");
-  assert.match(spec, /Ship a looped role workflow/);
+  assert.match(spec, /developer-debugger/);
   assert.match(spec, /docker compose restart app/);
   assert.match(spec, /tail -n 50 logs\/app\.log/);
-  assert.match(spec, /ERROR/);
-  assert.match(spec, /120/);
+  assert.match(spec, /TypeScript backend and CLI delivery/);
 
   const loadedProject = await loadProjectConfig(projectRoot);
-  assert.deepEqual(loadedProject.acceptance, ["Dry tests pass", "Real use passes"]);
+  assert.equal(loadedProject.loop_kind, "developer-debugger");
   assert.deepEqual(loadedProject.commands.restart, ["docker compose restart app"]);
-  assert.deepEqual(loadedProject.commands.monitor, ["tail -n 50 logs/app.log"]);
-  assert.deepEqual(loadedProject.commands.monitor_until, ["ERROR", "panic", "server exited"]);
-  assert.equal(loadedProject.commands.monitor_timeout_seconds, 120);
+  assert.equal(
+    loadedProject.roles.developer?.specialization,
+    "TypeScript backend and CLI delivery",
+  );
 
   const loadedRuntime = await loadRuntimeState(projectRoot);
   assert.equal(loadedRuntime.projectId, project.project.id);
+  assert.equal(loadedRuntime.version, 2);
   assert.deepEqual(loadedRuntime.launch, {});
   assert.equal(loadedRuntime.loop.status, "idle");
 
   const gitignore = await fs.readFile(path.join(projectRoot, ".gitignore"), "utf8");
   assert.match(gitignore, /\.devise\/watch-events\.jsonl/);
 
-  assert.equal(await exists(projectConfigPath(projectRoot)), true);
-  assert.equal(await exists(runtimeStatePath(projectRoot)), true);
+  await assert.doesNotReject(() => fs.access(projectConfigPath(projectRoot)));
+  await assert.doesNotReject(() => fs.access(runtimeStatePath(projectRoot)));
 });
 
-async function exists(targetPath: string): Promise<boolean> {
-  try {
-    await fs.access(targetPath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-test("loadRuntimeState falls back to legacy .codex-role state and saves in place", async () => {
-  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-legacy-project-"));
-  const input = {
+test("createProjectFiles writes a scientist-modeller schema-v2 project", async () => {
+  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-project-sci-"));
+  const { project } = await createProjectFiles({
     projectRoot,
-    goal: "Resume an old managed project",
-    acceptance: ["Still loads"],
-    dryTestCommands: ["npm test"],
-    useCommands: ["npm start"],
-  };
+    loopKind: "scientist-modeller",
+    goal: "Research and refine an analytic transport model",
+    acceptance: ["Scientist accepts the model"],
+    scientistResearchCommands: ["python research_notes.py"],
+    modellerDesignCommands: ["python build_model.py"],
+    scientistAssessCommands: ["python assess_model.py"],
+    setupCommands: ["uv sync"],
+    scientistSpecialization: "Quantum transport theory",
+    modellerSpecialization: "Analytic Green's function models",
+  });
 
-  await createProjectFiles(input);
-  await fs.rename(projectStateDir(projectRoot), path.join(projectRoot, ".codex-role"));
+  assert.equal(project.loop_kind, "scientist-modeller");
+  assert.equal(project.git.role_branch, "devise/project/modeller".replace("project", project.project.id));
+
+  const spec = await fs.readFile(specPath(projectRoot), "utf8");
+  assert.match(spec, /scientist-modeller/);
+  assert.match(spec, /python research_notes\.py/);
+  assert.match(spec, /Quantum transport theory/);
 
   const loadedProject = await loadProjectConfig(projectRoot);
-  assert.equal(loadedProject.goal, "Resume an old managed project");
+  assert.deepEqual(loadedProject.commands.scientist_research, ["python research_notes.py"]);
+  assert.deepEqual(loadedProject.commands.modeller_design, ["python build_model.py"]);
+  assert.deepEqual(loadedProject.commands.scientist_assess, ["python assess_model.py"]);
+});
 
-  const runtime = await loadRuntimeState(projectRoot);
-  runtime.loop.iteration = 7;
-  await saveRuntimeState(runtime);
+test("loadProjectConfig rejects old schema versions clearly", async () => {
+  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-project-old-"));
+  await fs.mkdir(path.join(projectRoot, ".devise"), { recursive: true });
+  await fs.writeFile(
+    path.join(projectRoot, ".devise", "project.yaml"),
+    [
+      "version: 1",
+      "project:",
+      "  id: old",
+      `  root: ${projectRoot}`,
+      "goal: old project",
+      "acceptance:",
+      "  - old",
+      "commands:",
+      "  dry_test:",
+      "    - npm test",
+      "  use:",
+      "    - npm start",
+    ].join("\n"),
+    "utf8",
+  );
 
-  const legacyRuntime = JSON.parse(
-    await fs.readFile(legacyRuntimeStatePath(projectRoot), "utf8"),
-  ) as { loop: { iteration: number } };
-  assert.equal(legacyRuntime.loop.iteration, 7);
-  assert.equal(await exists(runtimeStatePath(projectRoot)), false);
+  await assert.rejects(
+    () => loadProjectConfig(projectRoot),
+    /Unsupported project config version/,
+  );
 });

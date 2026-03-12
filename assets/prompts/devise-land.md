@@ -13,5 +13,5 @@ Behavior:
 2. Call `devise.get_status` first.
 3. If the loop is currently running, call `devise.stop_loop`.
 4. Regardless of whether the loop was running, call `devise.clear_launch` so the project is disarmed for future flights.
-5. Do not remove or replace assigned developer/debugger sessions.
+5. Do not remove or replace assigned active-role sessions.
 6. Confirm the project id, final loop status, and that the staged launch has been cleared.

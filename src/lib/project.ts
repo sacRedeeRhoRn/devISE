@@ -18,11 +18,17 @@ import {
   specPath,
   watchEventsPath,
 } from "./paths.js";
-import type {
-  CreateProjectInput,
-  ProjectConfig,
-  RoleKind,
-  RuntimeState,
+import {
+  activeRolesForLoopKind,
+  builderRoleForLoopKind,
+  isRoleAllowedForLoopKind,
+  roleTitle,
+  type CreateProjectInput,
+  type LoopKind,
+  type ProjectConfig,
+  type RoleConfig,
+  type RoleKind,
+  type RuntimeState,
 } from "./types.js";
 
 export function makeProjectId(projectRoot: string, explicitId?: string): string {
@@ -35,29 +41,83 @@ export function makeProjectId(projectRoot: string, explicitId?: string): string 
 }
 
 export function sanitizeId(input: string): string {
-  return input
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 64) || "project";
+  return (
+    input
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 64) || "project"
+  );
 }
 
-export function defaultBranchName(projectId: string): string {
-  return `devise/${projectId}/developer`;
+export function defaultBranchName(
+  projectId: string,
+  loopKind: LoopKind = "developer-debugger",
+): string {
+  return `devise/${projectId}/${builderRoleForLoopKind(loopKind)}`;
 }
 
 export function defaultProjectConfig(input: CreateProjectInput): ProjectConfig {
   const projectId = makeProjectId(input.projectRoot, input.projectId);
+  const projectRoot = path.resolve(input.projectRoot);
+
+  if (input.loopKind === "scientist-modeller") {
+    return {
+      version: 2,
+      project: {
+        id: projectId,
+        root: projectRoot,
+      },
+      loop_kind: input.loopKind,
+      goal: input.goal,
+      acceptance:
+        input.acceptance ?? ["Replace this placeholder with explicit scientific/model acceptance criteria."],
+      commands: {
+        setup: input.setupCommands ?? [],
+        scientist_research:
+          input.scientistResearchCommands ?? [
+            'printf "Set commands.scientist_research in .devise/project.yaml\\n" && exit 1',
+          ],
+        modeller_design:
+          input.modellerDesignCommands ?? [
+            'printf "Set commands.modeller_design in .devise/project.yaml\\n" && exit 1',
+          ],
+        scientist_assess:
+          input.scientistAssessCommands ?? [
+            'printf "Set commands.scientist_assess in .devise/project.yaml\\n" && exit 1',
+          ],
+      },
+      git: {
+        role_branch: defaultBranchName(projectId, input.loopKind),
+        commit_message_template: `role(${projectId}): modeller iteration {{iteration}}`,
+      },
+      loop: {
+        max_iterations: 10,
+        stagnation_limit: 2,
+      },
+      roles: {
+        scientist: makeRoleConfig(
+          "Synthesizes evidence, frames hypotheses, assesses model fitness, and decides whether the goal is met.",
+          input.scientistSpecialization,
+        ),
+        modeller: makeRoleConfig(
+          "Chooses methods and tools, designs the analytic model, and commits model updates for assessment.",
+          input.modellerSpecialization,
+        ),
+      },
+    };
+  }
+
   return {
-    version: 1,
+    version: 2,
     project: {
       id: projectId,
-      root: path.resolve(input.projectRoot),
+      root: projectRoot,
     },
+    loop_kind: input.loopKind,
     goal: input.goal,
-    acceptance: input.acceptance ?? [
-      "Replace this placeholder with explicit success criteria.",
-    ],
+    acceptance:
+      input.acceptance ?? ["Replace this placeholder with explicit success criteria."],
     commands: {
       setup: input.setupCommands ?? [],
       dry_test:
@@ -74,7 +134,7 @@ export function defaultProjectConfig(input: CreateProjectInput): ProjectConfig {
       monitor_timeout_seconds: input.monitorTimeoutSeconds ?? 300,
     },
     git: {
-      role_branch: defaultBranchName(projectId),
+      role_branch: defaultBranchName(projectId, input.loopKind),
       commit_message_template: `role(${projectId}): developer iteration {{iteration}}`,
     },
     loop: {
@@ -82,13 +142,14 @@ export function defaultProjectConfig(input: CreateProjectInput): ProjectConfig {
       stagnation_limit: 2,
     },
     roles: {
-      developer: {
-        description: "Patches code until dry-test passes and commits the result.",
-      },
-      debugger: {
-        description:
-          "Runs the real use flow, writes a detailed report, and decides whether the goal is met.",
-      },
+      developer: makeRoleConfig(
+        "Patches code until dry-test passes and commits the result.",
+        input.developerSpecialization,
+      ),
+      debugger: makeRoleConfig(
+        "Runs the real use flow, writes a detailed report, and decides whether the goal is met.",
+        input.debuggerSpecialization,
+      ),
     },
   };
 }
@@ -98,7 +159,7 @@ export function defaultRuntimeState(
   controllerThreadId?: string,
 ): RuntimeState {
   return {
-    version: 1,
+    version: 2,
     projectId: projectConfig.project.id,
     projectRoot: projectConfig.project.root,
     controllerThreadId,
@@ -151,11 +212,7 @@ export async function loadProjectConfig(projectRoot: string): Promise<ProjectCon
 
 export async function saveProjectConfig(project: ProjectConfig): Promise<void> {
   const configPath = await resolveProjectConfigPath(project.project.root);
-  await fs.writeFile(
-    configPath,
-    YAML.stringify(project),
-    "utf8",
-  );
+  await fs.writeFile(configPath, YAML.stringify(project), "utf8");
 }
 
 export async function loadRuntimeState(projectRoot: string): Promise<RuntimeState> {
@@ -164,7 +221,7 @@ export async function loadRuntimeState(projectRoot: string): Promise<RuntimeStat
     await resolveRuntimeStatePath(project.project.root),
     defaultRuntimeState(project),
   );
-  return normalizeRuntimeState(project, runtime);
+  return normalizeRuntimeState(project, runtime as Partial<RuntimeState>);
 }
 
 export async function saveRuntimeState(runtime: RuntimeState): Promise<void> {
@@ -182,16 +239,118 @@ export function ensureRoleAssigned(
   }
 }
 
+export function ensureRoleAllowedForProject(project: ProjectConfig, role: RoleKind): void {
+  if (!isRoleAllowedForLoopKind(project.loop_kind, role)) {
+    const active = activeRolesForProject(project).join(", ");
+    throw new Error(
+      `Role ${role} is not valid for ${project.loop_kind} projects (active roles: ${active})`,
+    );
+  }
+}
+
+export function activeRolesForProject(project: ProjectConfig): readonly [RoleKind, RoleKind] {
+  return activeRolesForLoopKind(project.loop_kind);
+}
+
 export function renderProjectSpec(project: ProjectConfig): string {
-  const restart = (project.commands.restart ?? []).map((item) => `- \`${item}\``).join("\n");
   const acceptance = project.acceptance.map((item) => `- ${item}`).join("\n");
-  const dryTest = project.commands.dry_test.map((item) => `- \`${item}\``).join("\n");
-  const useFlow = project.commands.use.map((item) => `- \`${item}\``).join("\n");
-  const monitor = (project.commands.monitor ?? []).map((item) => `- \`${item}\``).join("\n");
-  const monitorUntil = (project.commands.monitor_until ?? []).map((item) => `- ${item}`).join("\n");
+  const setup = renderCommandSection(project.commands.setup);
+  const specializations = renderRoleSpecializations(project.roles);
+
+  if (project.loop_kind === "scientist-modeller") {
+    const scientistResearch = renderCommandSection(project.commands.scientist_research);
+    const modellerDesign = renderCommandSection(project.commands.modeller_design);
+    const scientistAssess = renderCommandSection(project.commands.scientist_assess);
+
+    return `# Project Spec
+
+## Loop Kind
+
+scientist-modeller
+
+## Goal
+
+${project.goal}
+
+## Acceptance Criteria
+
+${acceptance}
+
+## Role Specialization
+
+${specializations}
+
+## Setup Commands
+
+${setup}
+
+## Scientist Research Commands
+
+${scientistResearch}
+
+## Modeller Design Commands
+
+${modellerDesign}
+
+## Scientist Assessment Commands
+
+${scientistAssess}
+`;
+  }
+
+  const dryTest = renderCommandSection(project.commands.dry_test);
+  const restart = renderCommandSection(project.commands.restart);
+  const useFlow = renderCommandSection(project.commands.use);
+  const monitor = renderCommandSection(project.commands.monitor);
+  const monitorUntil = renderBulletList(project.commands.monitor_until);
   const monitorTimeout = project.commands.monitor_timeout_seconds ?? 300;
 
-  return `# Project Spec\n\n## Goal\n\n${project.goal}\n\n## Acceptance Criteria\n\n${acceptance}\n\n## Dry Test Commands\n\n${dryTest}\n\n## Debugger Clean Restart Commands\n\n${restart || "- None configured."}\n\n## Real Use Commands\n\n${useFlow}\n\n## Debugger Monitor Commands\n\n${monitor || "- None configured."}\n\n## Debugger Caveats To Watch For\n\n${monitorUntil || "- None configured."}\n\n## Debugger Monitor Timeout Seconds\n\n${monitorTimeout}\n`;
+  return `# Project Spec
+
+## Loop Kind
+
+developer-debugger
+
+## Goal
+
+${project.goal}
+
+## Acceptance Criteria
+
+${acceptance}
+
+## Role Specialization
+
+${specializations}
+
+## Setup Commands
+
+${setup}
+
+## Dry Test Commands
+
+${dryTest}
+
+## Debugger Clean Restart Commands
+
+${restart}
+
+## Real Use Commands
+
+${useFlow}
+
+## Debugger Monitor Commands
+
+${monitor}
+
+## Debugger Caveats To Watch For
+
+${monitorUntil}
+
+## Debugger Monitor Timeout Seconds
+
+${monitorTimeout}
+`;
 }
 
 export async function hasManagedProjectConfig(projectRoot: string): Promise<boolean> {
@@ -245,17 +404,17 @@ export async function resolveRuntimeStatePath(projectRoot: string): Promise<stri
 
 export async function resolveArtifactsDir(projectRoot: string): Promise<string> {
   const resolvedRoot = path.resolve(projectRoot);
-  const currentPath = artifactsDir(resolvedRoot);
-  if (await pathExists(currentPath)) {
-    return currentPath;
+  const currentDir = artifactsDir(resolvedRoot);
+  if (await pathExists(currentDir)) {
+    return currentDir;
   }
 
-  const legacyPath = legacyArtifactsDir(resolvedRoot);
-  if (await pathExists(legacyPath)) {
-    return legacyPath;
+  const legacyDir = legacyArtifactsDir(resolvedRoot);
+  if (await pathExists(legacyDir)) {
+    return legacyDir;
   }
 
-  return currentPath;
+  return currentDir;
 }
 
 export async function resolveControllerLogPath(projectRoot: string): Promise<string> {
@@ -290,12 +449,13 @@ export async function resolveWatchEventsPath(projectRoot: string): Promise<strin
 
 function normalizeRuntimeState(
   project: ProjectConfig,
-  runtime: RuntimeState,
+  runtime: Partial<RuntimeState>,
 ): RuntimeState {
   const fallback = defaultRuntimeState(project, runtime.controllerThreadId);
   return {
     ...fallback,
     ...runtime,
+    version: 2,
     roles: runtime.roles ?? {},
     launch: {
       ...fallback.launch,
@@ -310,19 +470,95 @@ function normalizeRuntimeState(
 }
 
 function validateProjectConfig(project: ProjectConfig, configPath: string): void {
+  if (project?.version !== 2) {
+    throw new Error(
+      `Unsupported project config version at ${configPath}: expected version 2. Recreate or manually migrate this project.`,
+    );
+  }
+
   if (!project?.project?.id || !project?.project?.root) {
     throw new Error(`Invalid project config at ${configPath}: missing project.id or project.root`);
+  }
+
+  if (project.loop_kind !== "developer-debugger" && project.loop_kind !== "scientist-modeller") {
+    throw new Error(`Invalid project config at ${configPath}: loop_kind must be a supported value`);
   }
 
   if (!Array.isArray(project.acceptance) || project.acceptance.length === 0) {
     throw new Error(`Invalid project config at ${configPath}: acceptance must be a non-empty list`);
   }
 
-  if (!Array.isArray(project.commands?.dry_test) || project.commands.dry_test.length === 0) {
-    throw new Error(`Invalid project config at ${configPath}: commands.dry_test must be a non-empty list`);
+  const activeRoles = activeRolesForProject(project);
+  for (const role of activeRoles) {
+    if (!project.roles[role]?.description) {
+      throw new Error(
+        `Invalid project config at ${configPath}: roles.${role}.description is required for ${project.loop_kind}`,
+      );
+    }
   }
 
-  if (!Array.isArray(project.commands?.use) || project.commands.use.length === 0) {
-    throw new Error(`Invalid project config at ${configPath}: commands.use must be a non-empty list`);
+  if (project.loop_kind === "scientist-modeller") {
+    assertNonEmptyCommandList(
+      project.commands.scientist_research,
+      configPath,
+      "commands.scientist_research",
+    );
+    assertNonEmptyCommandList(
+      project.commands.modeller_design,
+      configPath,
+      "commands.modeller_design",
+    );
+    assertNonEmptyCommandList(
+      project.commands.scientist_assess,
+      configPath,
+      "commands.scientist_assess",
+    );
+    return;
   }
+
+  assertNonEmptyCommandList(project.commands.dry_test, configPath, "commands.dry_test");
+  assertNonEmptyCommandList(project.commands.use, configPath, "commands.use");
+}
+
+function assertNonEmptyCommandList(
+  commands: string[] | undefined,
+  configPath: string,
+  fieldName: string,
+): void {
+  if (!Array.isArray(commands) || commands.length === 0) {
+    throw new Error(`Invalid project config at ${configPath}: ${fieldName} must be a non-empty list`);
+  }
+}
+
+function renderCommandSection(commands?: string[]): string {
+  if (!commands || commands.length === 0) {
+    return "- None configured.";
+  }
+
+  return commands.map((item) => `- \`${item}\``).join("\n");
+}
+
+function renderBulletList(items?: string[]): string {
+  if (!items || items.length === 0) {
+    return "- None configured.";
+  }
+
+  return items.map((item) => `- ${item}`).join("\n");
+}
+
+function renderRoleSpecializations(roles: Partial<Record<RoleKind, RoleConfig>>): string {
+  const lines = Object.entries(roles).map(([role, config]) => {
+    const specialization = config?.specialization?.trim();
+    return specialization
+      ? `- ${roleTitle(role as RoleKind)}: ${specialization}`
+      : `- ${roleTitle(role as RoleKind)}: No additional specialization provided.`;
+  });
+  return lines.length > 0 ? lines.join("\n") : "- None configured.";
+}
+
+function makeRoleConfig(description: string, specialization?: string): RoleConfig {
+  return {
+    description,
+    specialization: specialization?.trim() || undefined,
+  };
 }

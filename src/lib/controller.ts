@@ -14,6 +14,7 @@ import {
   specPath,
 } from "./paths.js";
 import {
+  activeRolesForProject,
   ensureRoleAssigned,
   loadProjectConfig,
   loadRuntimeState,
@@ -23,13 +24,16 @@ import {
   resolveWatchEventsPath,
   saveRuntimeState,
 } from "./project.js";
-import type {
-  ControllerTurnResult,
-  LoopStartInput,
-  ProjectConfig,
-  RoleKind,
-  RuntimeState,
-  WatchEventRecord,
+import {
+  builderRoleForLoopKind,
+  roleTitle,
+  verifierRoleForLoopKind,
+  type ControllerTurnResult,
+  type LoopStartInput,
+  type ProjectConfig,
+  type RoleKind,
+  type RuntimeState,
+  type WatchEventRecord,
 } from "./types.js";
 
 type ResolvedLoopStartInput = LoopStartInput & {
@@ -39,30 +43,49 @@ type ResolvedLoopStartInput = LoopStartInput & {
 
 const ROLE_OUTPUT_SCHEMAS: Record<RoleKind, Record<string, unknown>> = {
   developer: strictObjectSchema({
-      status: { type: "string", enum: ["green", "blocked"] },
-      dry_test_passed: { type: "boolean" },
-      summary: { type: "string" },
-      handoff_report_path: { type: "string" },
-      commit_sha: nullableStringSchema(),
-      blocking_reason: nullableStringSchema(),
-    }),
+    status: { type: "string", enum: ["green", "blocked"] },
+    dry_test_passed: { type: "boolean" },
+    summary: { type: "string" },
+    handoff_report_path: { type: "string" },
+    commit_sha: nullableStringSchema(),
+    blocking_reason: nullableStringSchema(),
+  }),
   debugger: strictObjectSchema({
-      status: { type: "string", enum: ["goal_met", "needs_fix", "blocked"] },
-      use_passed: { type: "boolean" },
-      summary: { type: "string" },
-      report_path: { type: "string" },
-      restart_performed: { type: "boolean" },
-      monitor_result: {
-        type: "string",
-        enum: ["not_configured", "caveat_observed", "process_ended", "timeout_reached"],
-      },
-      observed_caveat: nullableStringSchema(),
-      issues: {
-        type: "array",
-        items: { type: "string" },
-      },
-      blocking_reason: nullableStringSchema(),
-    }),
+    status: { type: "string", enum: ["goal_met", "needs_fix", "blocked"] },
+    use_passed: { type: "boolean" },
+    summary: { type: "string" },
+    report_path: { type: "string" },
+    restart_performed: { type: "boolean" },
+    monitor_result: {
+      type: "string",
+      enum: ["not_configured", "caveat_observed", "process_ended", "timeout_reached"],
+    },
+    observed_caveat: nullableStringSchema(),
+    issues: {
+      type: "array",
+      items: { type: "string" },
+    },
+    blocking_reason: nullableStringSchema(),
+  }),
+  scientist: strictObjectSchema({
+    status: { type: "string", enum: ["goal_met", "needs_model_changes", "blocked"] },
+    assessment_passed: { type: "boolean" },
+    summary: { type: "string" },
+    assessment_report_path: { type: "string" },
+    issues: {
+      type: "array",
+      items: { type: "string" },
+    },
+    blocking_reason: nullableStringSchema(),
+  }),
+  modeller: strictObjectSchema({
+    status: { type: "string", enum: ["model_ready", "blocked"] },
+    design_ready: { type: "boolean" },
+    summary: { type: "string" },
+    model_report_path: { type: "string" },
+    commit_sha: nullableStringSchema(),
+    blocking_reason: nullableStringSchema(),
+  }),
 };
 
 export const roleOutputSchemasForTest = ROLE_OUTPUT_SCHEMAS;
@@ -99,8 +122,14 @@ export async function runLoop(
 ): Promise<RuntimeState> {
   const project = await loadProjectConfig(input.projectRoot);
   const runtime = await loadRuntimeState(input.projectRoot);
-  ensureRoleAssigned(runtime, input.startRole);
-  ensureRoleAssigned(runtime, input.startRole === "developer" ? "debugger" : "developer");
+  for (const role of activeRolesForProject(project)) {
+    ensureRoleAssigned(runtime, role);
+  }
+  if (!activeRolesForProject(project).includes(input.startRole)) {
+    throw new Error(
+      `startRole ${input.startRole} is not active for ${project.loop_kind} projects`,
+    );
+  }
 
   validateRunnableProject(project);
   await ensureDir(await resolveArtifactsDir(project.project.root));
@@ -217,7 +246,7 @@ export async function runLoop(
         return runtime;
       }
 
-      if (currentRole === "debugger" && result.status === "goal_met" && result.use_passed) {
+      if (verifierReachedGoal(project, currentRole, result)) {
         runtime.loop.status = "completed";
         runtime.loop.endedAt = new Date().toISOString();
         runtime.loop.pid = undefined;
@@ -232,7 +261,7 @@ export async function runLoop(
         return runtime;
       }
 
-      currentRole = currentRole === "developer" ? "debugger" : "developer";
+      currentRole = counterpartRole(project, currentRole);
     }
 
     runtime.loop.status = "failed";
@@ -270,7 +299,7 @@ async function hydrateRoleThreads(
   project: ProjectConfig,
   runtime: RuntimeState,
 ): Promise<void> {
-  for (const role of ["developer", "debugger"] as const) {
+  for (const role of activeRolesForProject(project)) {
     const assigned = runtime.roles[role];
     if (assigned) {
       await client.resumeThread({
@@ -322,10 +351,7 @@ async function runRoleTurn(
     `iter-${String(iteration).padStart(3, "0")}`,
   );
   await ensureDir(artifactDir);
-  const artifactPath = path.join(
-    artifactDir,
-    role === "developer" ? "developer-handoff.md" : "debugger-report.md",
-  );
+  const artifactPath = path.join(artifactDir, artifactFileNameForRole(role));
   const counterpartArtifact =
     runtime.loop.lastReportPath && (await pathExists(runtime.loop.lastReportPath))
       ? runtime.loop.lastReportPath
@@ -400,15 +426,13 @@ async function runRoleTurn(
   }
 
   const parsed = parseControllerTurnResult(agentMessage.text);
-  if (role === "developer") {
-    parsed.handoff_report_path ??= artifactPath;
+  applyDefaultArtifactPath(role, parsed, artifactPath);
+  if (isBuilderRole(project, role)) {
     parsed.commit_sha ??= await readHeadSha(project.project.root);
-  } else {
-    parsed.report_path ??= artifactPath;
-    validateDebuggerTurnResult(project, parsed);
   }
+  validateTurnResult(project, role, parsed);
 
-  const finalArtifactPath = parsed.report_path ?? parsed.handoff_report_path;
+  const finalArtifactPath = artifactPathFromResult(parsed);
   if (finalArtifactPath) {
     await appendWatchEvent(project.project.root, {
       kind: "artifact_written",
@@ -445,25 +469,30 @@ async function buildRoleTurnPrompt(
     counterpartArtifact && (await pathExists(counterpartArtifact))
       ? await readTextIfExists(counterpartArtifact)
       : "No prior counterpart artifact is available.";
-  const commands =
-    role === "developer"
-      ? renderCommandList(project.commands.dry_test)
-      : renderCommandList(project.commands.use);
-  const restartCommands = renderCommandList(project.commands.restart);
-  const monitorCommands = renderCommandList(project.commands.monitor);
-  const monitorUntil = renderBulletList(project.commands.monitor_until);
-  const monitorTimeoutSeconds = project.commands.monitor_timeout_seconds ?? 300;
+  const commandSections = renderRoleCommandSections(project, role);
   const projectConfig = await resolveProjectConfigPath(project.project.root);
+  const specialization = project.roles[role]?.specialization?.trim() ?? "No additional specialization configured.";
+  const activePair = activeRolesForProject(project).map(roleTitle).join(" -> ");
+  const counterpartRoleName = roleTitle(counterpartRole(project, role));
+  const roleDescription = project.roles[role]?.description ?? `${roleTitle(role)} role`;
 
   return `${roleInstructions}
 
 Project root: ${project.project.root}
 Project spec: ${specPath(project.project.root)}
 Project config: ${projectConfig}
+Loop kind: ${project.loop_kind}
+Active pair: ${activePair}
 Iteration: ${iteration}
 Managed branch: ${project.git.role_branch}
 Goal:
 ${project.goal}
+
+Role mission:
+${roleDescription}
+
+Project specialization for this role:
+${specialization}
 
 User-requested task for this loop:
 ${runtime.loop.task ?? "No explicit user task was recorded."}
@@ -471,20 +500,11 @@ ${runtime.loop.task ?? "No explicit user task was recorded."}
 Acceptance criteria:
 ${project.acceptance.map((item) => `- ${item}`).join("\n")}
 
-Commands for this role:
-${commands}
+Counterpart role:
+${counterpartRoleName}
 
-Debugger clean restart commands:
-${role === "debugger" ? restartCommands : "Not applicable for this role."}
-
-Debugger monitor commands:
-${role === "debugger" ? monitorCommands : "Not applicable for this role."}
-
-Debugger monitoring caveats:
-${role === "debugger" ? monitorUntil : "Not applicable for this role."}
-
-Debugger monitoring timeout seconds:
-${role === "debugger" ? String(monitorTimeoutSeconds) : "Not applicable for this role."}
+Operational commands and workflow for this role:
+${commandSections}
 
 Counterpart context:
 ${counterpartSummary}
@@ -518,6 +538,40 @@ function renderBulletList(items?: string[]): string {
   }
 
   return items.map((item) => `- ${item}`).join("\n");
+}
+
+function renderRoleCommandSections(project: ProjectConfig, role: RoleKind): string {
+  const sections = [`Setup commands:\n${renderCommandList(project.commands.setup)}`];
+
+  switch (role) {
+    case "developer":
+      sections.push(`Dry test commands:\n${renderCommandList(project.commands.dry_test)}`);
+      break;
+    case "debugger":
+      sections.push(`Real use commands:\n${renderCommandList(project.commands.use)}`);
+      sections.push(`Clean restart commands:\n${renderCommandList(project.commands.restart)}`);
+      sections.push(`Monitor commands:\n${renderCommandList(project.commands.monitor)}`);
+      sections.push(`Monitoring caveats:\n${renderBulletList(project.commands.monitor_until)}`);
+      sections.push(
+        `Monitoring timeout seconds:\n${String(project.commands.monitor_timeout_seconds ?? 300)}`,
+      );
+      break;
+    case "scientist":
+      sections.push(
+        `Scientist research commands:\n${renderCommandList(project.commands.scientist_research)}`,
+      );
+      sections.push(
+        `Scientist assessment commands:\n${renderCommandList(project.commands.scientist_assess)}`,
+      );
+      break;
+    case "modeller":
+      sections.push(
+        `Modeller design commands:\n${renderCommandList(project.commands.modeller_design)}`,
+      );
+      break;
+  }
+
+  return sections.join("\n\n");
 }
 
 async function readTerminalTurnSnapshot(
@@ -697,10 +751,34 @@ function extractObservableTurnEvents(
 
 export const observableTurnEventsForTest = extractObservableTurnEvents;
 
-function validateDebuggerTurnResult(
+function validateTurnResult(
   project: ProjectConfig,
+  role: RoleKind,
   result: ControllerTurnResult,
 ): void {
+  if (role === "developer") {
+    if (result.status !== "blocked" && result.dry_test_passed !== true) {
+      throw new Error("Developer turn did not confirm passing the configured dry tests");
+    }
+    return;
+  }
+
+  if (role === "modeller") {
+    if (result.status !== "blocked" && result.design_ready !== true) {
+      throw new Error("Modeller turn did not confirm the model/design was ready for assessment");
+    }
+    return;
+  }
+
+  if (role === "scientist") {
+    validateScientistTurnResult(result);
+    return;
+  }
+
+  validateDebuggerTurnResult(project, result);
+}
+
+function validateDebuggerTurnResult(project: ProjectConfig, result: ControllerTurnResult): void {
   const restartConfigured = (project.commands.restart?.length ?? 0) > 0;
   const monitoringConfigured =
     (project.commands.monitor?.length ?? 0) > 0 ||
@@ -720,6 +798,16 @@ function validateDebuggerTurnResult(
 
   if (result.status === "goal_met" && result.monitor_result === "caveat_observed") {
     throw new Error("Debugger turn cannot report goal_met when a monitoring caveat was observed");
+  }
+}
+
+function validateScientistTurnResult(result: ControllerTurnResult): void {
+  if (result.status === "goal_met" && result.assessment_passed !== true) {
+    throw new Error("Scientist turn cannot report goal_met without assessment_passed=true");
+  }
+
+  if (result.status === "needs_model_changes" && result.assessment_passed === true) {
+    throw new Error("Scientist turn cannot mark assessment_passed=true when more model changes are required");
   }
 }
 
@@ -754,6 +842,74 @@ function parseControllerTurnResult(text: string): ControllerTurnResult {
 
   const jsonText = trimmed.slice(start, end + 1);
   return JSON.parse(jsonText) as ControllerTurnResult;
+}
+
+function artifactFileNameForRole(role: RoleKind): string {
+  switch (role) {
+    case "developer":
+      return "developer-handoff.md";
+    case "debugger":
+      return "debugger-report.md";
+    case "scientist":
+      return "scientist-assessment.md";
+    case "modeller":
+      return "modeller-design-report.md";
+  }
+}
+
+function applyDefaultArtifactPath(
+  role: RoleKind,
+  result: ControllerTurnResult,
+  artifactPath: string,
+): void {
+  switch (role) {
+    case "developer":
+      result.handoff_report_path ??= artifactPath;
+      return;
+    case "debugger":
+      result.report_path ??= artifactPath;
+      return;
+    case "scientist":
+      result.assessment_report_path ??= artifactPath;
+      return;
+    case "modeller":
+      result.model_report_path ??= artifactPath;
+      return;
+  }
+}
+
+function artifactPathFromResult(result: ControllerTurnResult): string | undefined {
+  return (
+    result.report_path ??
+    result.handoff_report_path ??
+    result.model_report_path ??
+    result.assessment_report_path
+  );
+}
+
+function counterpartRole(project: ProjectConfig, role: RoleKind): RoleKind {
+  const [first, second] = activeRolesForProject(project);
+  return role === first ? second : first;
+}
+
+function isBuilderRole(project: ProjectConfig, role: RoleKind): boolean {
+  return builderRoleForLoopKind(project.loop_kind) === role;
+}
+
+function verifierReachedGoal(
+  project: ProjectConfig,
+  role: RoleKind,
+  result: ControllerTurnResult,
+): boolean {
+  if (verifierRoleForLoopKind(project.loop_kind) !== role || result.status !== "goal_met") {
+    return false;
+  }
+
+  if (role === "scientist") {
+    return result.assessment_passed === true;
+  }
+
+  return result.use_passed === true;
 }
 
 async function ensureManagedBranch(projectRoot: string, branchName: string): Promise<void> {
@@ -939,7 +1095,7 @@ function looksLikeJsonObject(text: string): boolean {
 }
 
 function capitalizeRole(role: RoleKind): string {
-  return `${role.slice(0, 1).toUpperCase()}${role.slice(1)}`;
+  return roleTitle(role);
 }
 
 function delay(ms: number): Promise<void> {
@@ -949,9 +1105,15 @@ function delay(ms: number): Promise<void> {
 }
 
 function validateRunnableProject(project: ProjectConfig): void {
-  const placeholders = [...project.commands.dry_test, ...project.commands.use].filter((command) =>
-    command.includes("Set commands."),
-  );
+  const commandBuckets =
+    project.loop_kind === "scientist-modeller"
+      ? [
+          ...(project.commands.scientist_research ?? []),
+          ...(project.commands.modeller_design ?? []),
+          ...(project.commands.scientist_assess ?? []),
+        ]
+      : [...(project.commands.dry_test ?? []), ...(project.commands.use ?? [])];
+  const placeholders = commandBuckets.filter((command) => command.includes("Set commands."));
   if (placeholders.length > 0) {
     throw new Error(
       `Project ${project.project.id} still contains placeholder commands in .devise/project.yaml`,

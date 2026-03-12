@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { RoleService } from "../lib/service.js";
+import { LOOP_KINDS, ROLE_KINDS } from "../lib/types.js";
 
 function structured(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
@@ -30,9 +31,10 @@ function registerWorkflowNamespace(
     `${namespace}.create_project`,
     {
       description:
-        "Create a managed devISE project scaffold with goal, acceptance criteria, and command contract.",
+        "Create a managed devISE project scaffold with loop kind, acceptance criteria, and loop-specific command contract.",
       inputSchema: {
         projectRoot: z.string(),
+        loopKind: z.enum(LOOP_KINDS),
         goal: z.string(),
         acceptance: z.array(z.string()).optional(),
         dryTestCommands: z.array(z.string()).optional(),
@@ -41,9 +43,16 @@ function registerWorkflowNamespace(
         monitorCommands: z.array(z.string()).optional(),
         monitorUntil: z.array(z.string()).optional(),
         monitorTimeoutSeconds: z.number().int().min(1).optional(),
+        scientistResearchCommands: z.array(z.string()).optional(),
+        modellerDesignCommands: z.array(z.string()).optional(),
+        scientistAssessCommands: z.array(z.string()).optional(),
         setupCommands: z.array(z.string()).optional(),
         projectId: z.string().optional(),
         controllerThreadId: z.string().optional(),
+        developerSpecialization: z.string().optional(),
+        debuggerSpecialization: z.string().optional(),
+        scientistSpecialization: z.string().optional(),
+        modellerSpecialization: z.string().optional(),
       },
     },
     async (input) => {
@@ -139,10 +148,10 @@ function registerWorkflowNamespace(
     `${namespace}.assign_role`,
     {
       description:
-        "Assign the developer or debugger role to the current session or to a forked old session.",
+        "Assign one active project role to the current session or to a forked old session.",
       inputSchema: {
         projectRoot: z.string(),
-        role: z.enum(["developer", "debugger"]),
+        role: z.enum(ROLE_KINDS),
         mode: z.enum(["current", "old"]),
         threadId: z.string().optional(),
         currentThreadId: z.string().optional(),
@@ -170,7 +179,7 @@ function registerWorkflowNamespace(
         "Stage the next automatic loop launch for a managed project without starting the controller yet.",
       inputSchema: {
         projectRoot: z.string(),
-        startRole: z.enum(["developer", "debugger"]),
+        startRole: z.enum(ROLE_KINDS),
         task: z.string().min(1),
       },
     },
@@ -192,10 +201,10 @@ function registerWorkflowNamespace(
     `${namespace}.start_loop`,
     {
       description:
-        "Start the background developer/debugger loop for a managed project using staged launch state or explicit start parameters.",
+        "Start the background role loop for a managed project using staged launch state or explicit start parameters.",
       inputSchema: {
         projectRoot: z.string(),
-        startRole: z.enum(["developer", "debugger"]).optional(),
+        startRole: z.enum(ROLE_KINDS).optional(),
         task: z.string().min(1).optional(),
       },
     },
@@ -230,7 +239,7 @@ function registerWorkflowNamespace(
         content: [
           {
             type: "text",
-            text: `Project ${status.project.project.id}: loop=${status.runtime.loop.status} armed=${armed}`,
+            text: `Project ${status.project.project.id}: kind=${status.project.loop_kind} loop=${status.runtime.loop.status} armed=${armed}`,
           },
         ],
         structuredContent: structured(status),

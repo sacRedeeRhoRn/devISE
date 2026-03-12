@@ -5,21 +5,18 @@ import os from "node:os";
 import path from "node:path";
 
 import { RoleService } from "../src/lib/service.js";
-import {
-  createProjectFiles,
-  loadRuntimeState,
-  saveRuntimeState,
-} from "../src/lib/project.js";
+import { createProjectFiles, loadRuntimeState, saveRuntimeState } from "../src/lib/project.js";
 import type { RoleKind } from "../src/lib/types.js";
 
 function makeService(options?: ConstructorParameters<typeof RoleService>[2]): RoleService {
   return new RoleService(process.cwd(), path.join(process.cwd(), "dist/src/cli.js"), options);
 }
 
-test("startLoop requires both roles to be assigned before launch", async () => {
+test("startLoop requires both active roles to be assigned before launch", async () => {
   const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-service-project-"));
   await createProjectFiles({
     projectRoot,
+    loopKind: "developer-debugger",
     goal: "Require both roles",
     acceptance: ["roles must be assigned first"],
     dryTestCommands: ["npm test"],
@@ -34,7 +31,7 @@ test("startLoop requires both roles to be assigned before launch", async () => {
         startRole: "developer",
         task: "Implement the next requested change",
       }),
-    /Both roles must be assigned before starting the loop/,
+    /Both roles for developer-debugger must be assigned before starting the loop/,
   );
 });
 
@@ -42,13 +39,14 @@ test("stageLaunch persists the next flight seed without starting the loop", asyn
   const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-service-stage-"));
   await createProjectFiles({
     projectRoot,
+    loopKind: "developer-debugger",
     goal: "Stage a launch",
     acceptance: ["launch is armed"],
     dryTestCommands: ["npm test"],
     useCommands: ["npm start"],
   });
 
-  await assignBothRoles(projectRoot);
+  await assignActiveRoles(projectRoot, "developer-debugger");
   const service = makeService();
   const runtime = await service.stageLaunch({
     projectRoot,
@@ -66,13 +64,14 @@ test("startLoop uses staged launch state and resets per-run loop fields", async 
   const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-service-flight-"));
   await createProjectFiles({
     projectRoot,
+    loopKind: "developer-debugger",
     goal: "Launch from staged state",
     acceptance: ["controller starts from staged seed"],
     dryTestCommands: ["npm test"],
     useCommands: ["npm start"],
   });
 
-  await assignBothRoles(projectRoot);
+  await assignActiveRoles(projectRoot, "developer-debugger");
   const runtime = await loadRuntimeState(projectRoot);
   runtime.loop.status = "orphaned";
   runtime.loop.iteration = 4;
@@ -116,21 +115,49 @@ test("startLoop uses staged launch state and resets per-run loop fields", async 
   assert.deepEqual(launched.history, []);
 });
 
-test("clearLaunch removes staged launch and preserves role assignments", async () => {
+test("scientist-modeller projects only accept scientist as the start role", async () => {
+  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-service-science-"));
+  await createProjectFiles({
+    projectRoot,
+    loopKind: "scientist-modeller",
+    goal: "Fit an analytic model",
+    acceptance: ["Scientist accepts the model"],
+    scientistResearchCommands: ["python research.py"],
+    modellerDesignCommands: ["python model.py"],
+    scientistAssessCommands: ["python assess.py"],
+  });
+
+  await assignActiveRoles(projectRoot, "scientist-modeller");
+  const service = makeService();
+
+  await assert.rejects(
+    () =>
+      service.stageLaunch({
+        projectRoot,
+        startRole: "modeller",
+        task: "Start from the model side",
+      }),
+    /startRole modeller is not valid for scientist-modeller projects/,
+  );
+});
+
+test("clearLaunch removes staged launch and preserves active-role assignments", async () => {
   const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-service-clear-"));
   await createProjectFiles({
     projectRoot,
+    loopKind: "scientist-modeller",
     goal: "Clear staged launch",
     acceptance: ["assignments stay"],
-    dryTestCommands: ["npm test"],
-    useCommands: ["npm start"],
+    scientistResearchCommands: ["python research.py"],
+    modellerDesignCommands: ["python model.py"],
+    scientistAssessCommands: ["python assess.py"],
   });
 
-  await assignBothRoles(projectRoot);
+  await assignActiveRoles(projectRoot, "scientist-modeller");
   const runtime = await loadRuntimeState(projectRoot);
   runtime.launch = {
-    stagedStartRole: "developer",
-    stagedTask: "Patch the next issue",
+    stagedStartRole: "scientist",
+    stagedTask: "Assess the latest model",
     stagedAt: new Date().toISOString(),
   };
   await saveRuntimeState(runtime);
@@ -139,14 +166,15 @@ test("clearLaunch removes staged launch and preserves role assignments", async (
   const cleared = await service.clearLaunch(projectRoot);
 
   assert.deepEqual(cleared.launch, {});
-  assert.equal(cleared.roles.developer?.threadId, "developer-thread");
-  assert.equal(cleared.roles.debugger?.threadId, "debugger-thread");
+  assert.equal(cleared.roles.scientist?.threadId, "scientist-thread");
+  assert.equal(cleared.roles.modeller?.threadId, "modeller-thread");
 });
 
 test("getStatus marks dead running controllers as orphaned", async () => {
   const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-service-status-"));
   await createProjectFiles({
     projectRoot,
+    loopKind: "developer-debugger",
     goal: "Detect orphaned loop state",
     acceptance: ["status should be clear"],
     dryTestCommands: ["npm test"],
@@ -168,10 +196,18 @@ test("getStatus marks dead running controllers as orphaned", async () => {
   assert.match(status.runtime.loop.lastError ?? "", /no longer alive|without an active pid/);
 });
 
-async function assignBothRoles(projectRoot: string): Promise<void> {
+async function assignActiveRoles(
+  projectRoot: string,
+  loopKind: "developer-debugger" | "scientist-modeller",
+): Promise<void> {
   const runtime = await loadRuntimeState(projectRoot);
-  runtime.roles.developer = makeRoleSession("developer");
-  runtime.roles.debugger = makeRoleSession("debugger");
+  if (loopKind === "developer-debugger") {
+    runtime.roles.developer = makeRoleSession("developer");
+    runtime.roles.debugger = makeRoleSession("debugger");
+  } else {
+    runtime.roles.scientist = makeRoleSession("scientist");
+    runtime.roles.modeller = makeRoleSession("modeller");
+  }
   await saveRuntimeState(runtime);
 }
 

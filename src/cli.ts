@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { RoleService } from "./lib/service.js";
 import { repoRootFromModule } from "./lib/paths.js";
+import { activeRolesForLoopKind, ROLE_KINDS } from "./lib/types.js";
 import { startWatch } from "./lib/watch.js";
 import { startMcpServer } from "./mcp/server.js";
 
@@ -40,6 +41,8 @@ async function main(): Promise<void> {
       );
       console.log(`project: ${status.project.project.id}`);
       console.log(`root: ${status.project.project.root}`);
+      console.log(`loop_kind: ${status.project.loop_kind}`);
+      console.log(`active_roles: ${activeRolesForLoopKind(status.project.loop_kind).join(", ")}`);
       console.log(`loop: ${status.runtime.loop.status}`);
       console.log(`iteration: ${status.runtime.loop.iteration}`);
       console.log(`armed: ${armed}`);
@@ -49,11 +52,10 @@ async function main(): Promise<void> {
       console.log(`pid: ${status.runtime.loop.pid ?? "none"}`);
       console.log(`controller_alive: ${status.controllerAlive}`);
       console.log(`roles: ${Object.keys(status.runtime.roles).join(", ") || "none"}`);
-      if (status.runtime.roles.developer) {
-        console.log(`developer_thread: ${status.runtime.roles.developer.threadId}`);
-      }
-      if (status.runtime.roles.debugger) {
-        console.log(`debugger_thread: ${status.runtime.roles.debugger.threadId}`);
+      for (const role of activeRolesForLoopKind(status.project.loop_kind)) {
+        if (status.runtime.roles[role]) {
+          console.log(`${role}_thread: ${status.runtime.roles[role]?.threadId}`);
+        }
       }
       if (status.runtime.loop.lastReportPath) {
         console.log(`last_report: ${status.runtime.loop.lastReportPath}`);
@@ -71,7 +73,7 @@ async function main(): Promise<void> {
       const projectRoot = valueForFlag(rest, "--project-root");
       const startRole = valueForFlag(rest, "--start-role");
       const task = valueForFlag(rest, "--task");
-      if (!projectRoot || !task || (startRole !== "developer" && startRole !== "debugger")) {
+      if (!projectRoot || !task || !isKnownRole(startRole)) {
         throw new Error(`stage-launch requires --project-root, --start-role, and --task`);
       }
       const runtime = await service.stageLaunch({
@@ -132,7 +134,7 @@ async function main(): Promise<void> {
       const projectRoot = valueForFlag(rest, "--project-root");
       const startRole = valueForFlag(rest, "--start-role");
       const task = valueForFlag(rest, "--task");
-      if (!projectRoot || !task || (startRole !== "developer" && startRole !== "debugger")) {
+      if (!projectRoot || !task || !isKnownRole(startRole)) {
         throw new Error(`run-loop requires --project-root, --start-role, and --task`);
       }
       await service.runLoopForeground({
@@ -161,13 +163,17 @@ function printUsage(): never {
   devISE install
   devISE doctor [project-root]
   devISE status [project-root]
-  devISE stage-launch --project-root <path> --start-role <developer|debugger> --task <text>
+  devISE stage-launch --project-root <path> --start-role <developer|debugger|scientist|modeller> --task <text>
   devISE flight --project-root <path>
   devISE land --project-root <path>
   devISE watch [project-root|project-id]
   devISE serve
-  devISE run-loop --project-root <path> --start-role <developer|debugger> --task <text>`);
+  devISE run-loop --project-root <path> --start-role <developer|debugger|scientist|modeller> --task <text>`);
   process.exit(1);
+}
+
+function isKnownRole(value: string | undefined): value is (typeof ROLE_KINDS)[number] {
+  return Boolean(value && ROLE_KINDS.includes(value as (typeof ROLE_KINDS)[number]));
 }
 
 main().catch((error) => {

@@ -1,7 +1,7 @@
 {
   "name": "devISE",
   "version": "0.1.0",
-  "description": "devISE orchestrator for managed developer/debugger project loops",
+  "description": "devISE orchestrator for managed expert role loops",
   "type": "module",
   "bin": {
     "devISE": "./dist/src/cli.js"

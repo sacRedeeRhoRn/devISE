@@ -18,11 +18,23 @@ test("role output schemas require every property and allow nullable optional fie
     string,
     Record<string, unknown>
   >;
+  const scientistProperties = roleOutputSchemasForTest.scientist.properties as Record<
+    string,
+    Record<string, unknown>
+  >;
+  const modellerProperties = roleOutputSchemasForTest.modeller.properties as Record<
+    string,
+    Record<string, unknown>
+  >;
 
   assert.deepEqual(developerProperties.commit_sha?.type, ["string", "null"]);
   assert.deepEqual(developerProperties.blocking_reason?.type, ["string", "null"]);
   assert.deepEqual(debuggerProperties.observed_caveat?.type, ["string", "null"]);
   assert.deepEqual(debuggerProperties.blocking_reason?.type, ["string", "null"]);
+  assert.deepEqual(scientistProperties.blocking_reason?.type, ["string", "null"]);
+  assert.equal(scientistProperties.assessment_passed?.type, "boolean");
+  assert.deepEqual(modellerProperties.commit_sha?.type, ["string", "null"]);
+  assert.equal(modellerProperties.design_ready?.type, "boolean");
 });
 
 test("observable turn events capture commentary and command progress without final JSON noise", () => {

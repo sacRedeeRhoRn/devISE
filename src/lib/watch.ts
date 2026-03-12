@@ -3,23 +3,26 @@ import path from "node:path";
 import blessed from "blessed";
 
 import { readTextIfExists } from "./fs.js";
+import { activeRolesForProject } from "./project.js";
 import { resolveControllerLogPath, resolveWatchEventsPath } from "./project.js";
 import type { RoleService } from "./service.js";
-import type { IterationRecord, RoleKind, RuntimeState, WatchEventRecord } from "./types.js";
+import { roleTitle, type IterationRecord, type ProjectConfig, type RoleKind, type RuntimeState, type WatchEventRecord } from "./types.js";
 
-type PaneMode = "timeline" | "feed" | "developer" | "debugger";
-type Tone = "developer" | "debugger" | "ok" | "warn" | "err" | "muted";
+type PaneMode = "timeline" | "feed" | "roleA" | "roleB";
+type Tone = "developer" | "debugger" | "scientist" | "modeller" | "ok" | "warn" | "err" | "muted";
 
 interface MonitorSnapshot {
   projectId: string;
   projectRoot: string;
   runtime: RuntimeState;
+  roleA: RoleKind;
+  roleB: RoleKind;
   controllerAlive: boolean;
   events: WatchEventRecord[];
-  developerRecord?: IterationRecord;
-  debuggerRecord?: IterationRecord;
-  developerPreview: string[];
-  debuggerPreview: string[];
+  roleARecord?: IterationRecord;
+  roleBRecord?: IterationRecord;
+  roleAPreview: string[];
+  roleBPreview: string[];
 }
 
 interface WatchTimelineEntry {
@@ -60,7 +63,8 @@ interface WatchModel {
   headerNote: string;
   timeline: WatchTimelineEntry[];
   feed: WatchFeedItem[];
-  roles: Record<RoleKind, WatchRolePanel>;
+  roleA: WatchRolePanel;
+  roleB: WatchRolePanel;
 }
 
 interface WatchUi {
@@ -69,8 +73,8 @@ interface WatchUi {
   timeline: blessed.Widgets.ListElement;
   feed: blessed.Widgets.ListElement;
   inspector: blessed.Widgets.BoxElement;
-  developerBox: blessed.Widgets.BoxElement;
-  debuggerBox: blessed.Widgets.BoxElement;
+  roleABox: blessed.Widgets.BoxElement;
+  roleBBox: blessed.Widgets.BoxElement;
   detail: blessed.Widgets.BoxElement;
   help: blessed.Widgets.BoxElement;
 }
@@ -91,6 +95,8 @@ const THEME = {
   muted: "#aa9c8e",
   developer: "#d9a15d",
   debugger: "#7db8c9",
+  scientist: "#89b46a",
+  modeller: "#c58ac7",
   ok: "#7bc67e",
   warn: "#d7b06d",
   err: "#d97b70",
@@ -111,6 +117,7 @@ export async function startWatch(
 
   if (!process.stdout.isTTY) {
     const snapshot = await buildSnapshot(
+      initialStatus.project,
       initialStatus.runtime,
       initialStatus.controllerAlive,
       watchEventsPath,
@@ -132,6 +139,7 @@ export async function startWatch(
   let closed = false;
   let currentModel = buildWatchModel(
     await buildSnapshot(
+      initialStatus.project,
       initialStatus.runtime,
       initialStatus.controllerAlive,
       watchEventsPath,
@@ -147,6 +155,7 @@ export async function startWatch(
   const refresh = async (): Promise<void> => {
     const status = await service.getStatus(selector);
     const snapshot = await buildSnapshot(
+      status.project,
       status.runtime,
       status.controllerAlive,
       watchEventsPath,
@@ -180,11 +189,11 @@ export async function startWatch(
     redrawCurrent();
   });
   ui.screen.key(["1"], () => {
-    state.pane = "developer";
+    state.pane = "roleA";
     redrawCurrent();
   });
   ui.screen.key(["2"], () => {
-    state.pane = "debugger";
+    state.pane = "roleB";
     redrawCurrent();
   });
   ui.screen.key(["r"], () => {
@@ -244,6 +253,7 @@ export async function startWatch(
 }
 
 export async function buildSnapshot(
+  project: ProjectConfig,
   runtime: RuntimeState,
   controllerAlive: boolean,
   watchEventsPath: string,
@@ -253,19 +263,22 @@ export async function buildSnapshot(
   const controllerLogText = await readTextIfExists(controllerLogPath);
   const parsedEvents = parseWatchEventsText(watchEventText);
   const events = parsedEvents.length > 0 ? parsedEvents : parseControllerLogFallback(controllerLogText);
-  const developerRecord = findLatestRecord(runtime, "developer");
-  const debuggerRecord = findLatestRecord(runtime, "debugger");
+  const [roleA, roleB] = activeRolesForProject(project);
+  const roleARecord = findLatestRecord(runtime, roleA);
+  const roleBRecord = findLatestRecord(runtime, roleB);
 
   return {
     projectId: runtime.projectId,
     projectRoot: runtime.projectRoot,
     runtime,
+    roleA,
+    roleB,
     controllerAlive,
     events,
-    developerRecord,
-    debuggerRecord,
-    developerPreview: await readArtifactPreview(developerRecord?.artifactPath),
-    debuggerPreview: await readArtifactPreview(debuggerRecord?.artifactPath),
+    roleARecord,
+    roleBRecord,
+    roleAPreview: await readArtifactPreview(roleARecord?.artifactPath),
+    roleBPreview: await readArtifactPreview(roleBRecord?.artifactPath),
   };
 }
 
@@ -295,7 +308,11 @@ export function parseControllerLogFallback(text: string): WatchEventRecord[] {
         ? "developer"
         : line.includes("role=debugger")
           ? "debugger"
-          : undefined;
+          : line.includes("role=scientist")
+            ? "scientist"
+            : line.includes("role=modeller")
+              ? "modeller"
+              : undefined;
       const kind = line.includes("event=turn_completed")
         ? "turn_completed"
         : line.includes("event=turn_started")
@@ -324,13 +341,9 @@ export function buildWatchModel(snapshot: MonitorSnapshot, spinnerIndex: number)
       : snapshot.runtime.loop.lastRole ?? "none";
   const timeline = buildTimeline(snapshot.runtime, activeRole);
   const feed = buildFeed(snapshot.events);
-  const roles = {
-    developer: buildRolePanel(snapshot.runtime, snapshot.developerRecord, snapshot.developerPreview, "developer"),
-    debugger: buildRolePanel(snapshot.runtime, snapshot.debuggerRecord, snapshot.debuggerPreview, "debugger"),
-  };
   const activity =
     snapshot.runtime.loop.status === "running"
-      ? `${SPINNER[spinnerIndex]} ${capitalizeRole(activeRole === "none" ? "developer" : activeRole)} in motion`
+      ? `${SPINNER[spinnerIndex]} ${capitalizeRole(activeRole === "none" ? snapshot.roleA : activeRole)} in motion`
       : "Observable output only. Hidden chain-of-thought is not available.";
 
   return {
@@ -344,7 +357,8 @@ export function buildWatchModel(snapshot: MonitorSnapshot, spinnerIndex: number)
     headerNote: activity,
     timeline,
     feed,
-    roles,
+    roleA: buildRolePanel(snapshot.runtime, snapshot.roleARecord, snapshot.roleAPreview, snapshot.roleA),
+    roleB: buildRolePanel(snapshot.runtime, snapshot.roleBRecord, snapshot.roleBPreview, snapshot.roleB),
   };
 }
 
@@ -433,14 +447,14 @@ function createUi(): WatchUi {
     },
   });
 
-  const developerBox = blessed.box({
+  const roleABox = blessed.box({
     parent: inspector,
     top: 0,
     left: 0,
     right: 0,
     height: "50%",
     border: "line",
-    label: " Developer ",
+    label: " Role 1 ",
     tags: true,
     scrollable: true,
     alwaysScroll: true,
@@ -456,14 +470,14 @@ function createUi(): WatchUi {
     },
   });
 
-  const debuggerBox = blessed.box({
+  const roleBBox = blessed.box({
     parent: inspector,
     top: "50%",
     left: 0,
     right: 0,
     bottom: 0,
     border: "line",
-    label: " Debugger ",
+    label: " Role 2 ",
     tags: true,
     scrollable: true,
     alwaysScroll: true,
@@ -519,10 +533,10 @@ function createUi(): WatchUi {
     },
     content: [
       "{bold}q{/bold} quit",
-      "{bold}Tab{/bold} cycle focus between timeline, feed, developer, debugger",
+      "{bold}Tab{/bold} cycle focus between timeline, feed, role 1, role 2",
       "{bold}0{/bold} focus live feed",
-      "{bold}1{/bold} focus developer lane",
-      "{bold}2{/bold} focus debugger lane",
+      "{bold}1{/bold} focus first active role lane",
+      "{bold}2{/bold} focus second active role lane",
       "{bold}↑ ↓{/bold} or {bold}j k{/bold} move selection or scroll detail",
       "{bold}PgUp PgDn{/bold} scroll detail",
       "{bold}r{/bold} refresh immediately",
@@ -536,8 +550,8 @@ function createUi(): WatchUi {
     timeline,
     feed,
     inspector,
-    developerBox,
-    debuggerBox,
+    roleABox,
+    roleBBox,
     detail,
     help,
   };
@@ -553,19 +567,21 @@ function renderUi(ui: WatchUi, model: WatchModel, state: WatchState): void {
   ui.timeline.select(state.timelineIndex);
   ui.feed.select(state.feedIndex);
 
-  ui.developerBox.setContent(renderRolePanel(model.roles.developer));
-  ui.debuggerBox.setContent(renderRolePanel(model.roles.debugger));
+  ui.roleABox.setLabel(` ${model.roleA.title} `);
+  ui.roleBBox.setLabel(` ${model.roleB.title} `);
+  ui.roleABox.setContent(renderRolePanel(model.roleA));
+  ui.roleBBox.setContent(renderRolePanel(model.roleB));
 
   ui.detail.setContent(renderDetail(model, state));
   ui.detail.setScrollPerc(0);
 
-  setPaneStyles(ui, state);
+  setPaneStyles(ui, state, model);
   ui.screen.render();
 }
 
 function renderHeader(model: WatchModel): string {
   const statusTone = toneTag(statusToneOf(model.loopStatus));
-  const activeTone = toneTag(model.activeRole === "developer" ? "developer" : model.activeRole === "debugger" ? "debugger" : "muted");
+  const activeTone = toneTag(model.activeRole === "none" ? "muted" : model.activeRole);
   const controllerTone = toneTag(model.controllerAlive ? "ok" : "err");
 
   return [
@@ -596,11 +612,11 @@ function renderRolePanel(panel: WatchRolePanel): string {
 }
 
 function renderDetail(model: WatchModel, state: WatchState): string {
-  if (state.pane === "developer") {
-    return model.roles.developer.detail;
+  if (state.pane === "roleA") {
+    return model.roleA.detail;
   }
-  if (state.pane === "debugger") {
-    return model.roles.debugger.detail;
+  if (state.pane === "roleB") {
+    return model.roleB.detail;
   }
   if (state.pane === "timeline") {
     return model.timeline[state.timelineIndex]?.detail ?? "No timeline entry selected.";
@@ -608,11 +624,13 @@ function renderDetail(model: WatchModel, state: WatchState): string {
   return model.feed[state.feedIndex]?.detail ?? "No live feed item selected.";
 }
 
-function setPaneStyles(ui: WatchUi, state: WatchState): void {
+function setPaneStyles(ui: WatchUi, state: WatchState, model: WatchModel): void {
+  const roleAColor = themeColor(model.roleA.tone);
+  const roleBColor = themeColor(model.roleB.tone);
   ui.timeline.style.border.fg = state.pane === "timeline" ? THEME.warn : THEME.border;
   ui.feed.style.border.fg = state.pane === "feed" ? THEME.warn : THEME.border;
-  ui.developerBox.style.border.fg = state.pane === "developer" ? THEME.accent : THEME.developer;
-  ui.debuggerBox.style.border.fg = state.pane === "debugger" ? THEME.accent : THEME.debugger;
+  ui.roleABox.style.border.fg = state.pane === "roleA" ? THEME.accent : roleAColor;
+  ui.roleBBox.style.border.fg = state.pane === "roleB" ? THEME.accent : roleBColor;
   ui.detail.style.border.fg = THEME.warn;
 }
 
@@ -643,7 +661,7 @@ function buildTimeline(runtime: RuntimeState, activeRole: RoleKind | "none"): Wa
       key: `active-${runtime.loop.iteration}`,
       label:
         `{bold}${String(runtime.loop.iteration).padStart(2, "0")}{/bold} ` +
-        `${roleBadge(activeRole === "none" ? "developer" : activeRole)} ` +
+        `${roleBadge(activeRole === "none" ? runtime.loop.startRole ?? "developer" : activeRole)} ` +
         `{yellow-fg}active{/yellow-fg} ` +
         `${escapeTags(truncate(runtime.loop.task ?? "Working...", 38))}`,
       detail: [
@@ -651,7 +669,7 @@ function buildTimeline(runtime: RuntimeState, activeRole: RoleKind | "none"): Wa
         `${dim("role")} ${escapeTags(activeRole)}`,
         `${dim("task")} ${escapeTags(runtime.loop.task ?? "none")}`,
       ].join("\n"),
-      tone: activeRole === "debugger" ? "debugger" : "developer",
+      tone: activeRole === "none" ? "muted" : activeRole,
     });
   }
 
@@ -787,20 +805,27 @@ async function readArtifactPreview(artifactPath?: string): Promise<string[]> {
 }
 
 function toneForEvent(event: WatchEventRecord): Tone {
-  if (event.role === "developer") {
-    return "developer";
-  }
-  if (event.role === "debugger") {
-    return "debugger";
+  if (
+    event.role === "developer" ||
+    event.role === "debugger" ||
+    event.role === "scientist" ||
+    event.role === "modeller"
+  ) {
+    return event.role;
   }
   return statusToneOf(event.status ?? event.kind);
 }
 
 function statusToneOf(value: string): Tone {
-  if (value === "completed" || value === "goal_met" || value === "green") {
+  if (
+    value === "completed" ||
+    value === "goal_met" ||
+    value === "green" ||
+    value === "model_ready"
+  ) {
     return "ok";
   }
-  if (value === "running" || value === "inProgress") {
+  if (value === "running" || value === "inProgress" || value === "needs_fix" || value === "needs_model_changes") {
     return "warn";
   }
   if (value === "blocked" || value === "failed" || value === "orphaned" || value === "interrupted") {
@@ -815,6 +840,10 @@ function toneTag(tone: Tone): string {
       return `{${THEME.developer}-fg}`;
     case "debugger":
       return `{${THEME.debugger}-fg}`;
+    case "scientist":
+      return `{${THEME.scientist}-fg}`;
+    case "modeller":
+      return `{${THEME.modeller}-fg}`;
     case "ok":
       return `{${THEME.ok}-fg}`;
     case "warn":
@@ -826,9 +855,37 @@ function toneTag(tone: Tone): string {
   }
 }
 
+function themeColor(tone: Tone): string {
+  switch (tone) {
+    case "developer":
+      return THEME.developer;
+    case "debugger":
+      return THEME.debugger;
+    case "scientist":
+      return THEME.scientist;
+    case "modeller":
+      return THEME.modeller;
+    case "ok":
+      return THEME.ok;
+    case "warn":
+      return THEME.warn;
+    case "err":
+      return THEME.err;
+    default:
+      return THEME.border;
+  }
+}
+
 function roleBadge(role: RoleKind): string {
-  const tone = role === "developer" ? "developer" : "debugger";
-  const label = role === "developer" ? "DEV" : "DBG";
+  const tone = role;
+  const label =
+    role === "developer"
+      ? "DEV"
+      : role === "debugger"
+        ? "DBG"
+        : role === "scientist"
+          ? "SCI"
+          : "MOD";
   return `${toneTag(tone)}{bold}${label}{/bold}{/}`;
 }
 
@@ -844,18 +901,18 @@ function nextPane(pane: PaneMode): PaneMode {
   return pane === "timeline"
     ? "feed"
     : pane === "feed"
-      ? "developer"
-      : pane === "developer"
-        ? "debugger"
+      ? "roleA"
+      : pane === "roleA"
+        ? "roleB"
         : "timeline";
 }
 
 function previousPane(pane: PaneMode): PaneMode {
   return pane === "timeline"
-    ? "debugger"
-    : pane === "debugger"
-      ? "developer"
-      : pane === "developer"
+    ? "roleB"
+    : pane === "roleB"
+      ? "roleA"
+      : pane === "roleA"
         ? "feed"
         : "timeline";
 }
@@ -871,7 +928,7 @@ function capitalizeRole(role: RoleKind | "none"): string {
   if (role === "none") {
     return "No role";
   }
-  return `${role.slice(0, 1).toUpperCase()}${role.slice(1)}`;
+  return roleTitle(role);
 }
 
 function truncate(input: string, maxLength: number): string {
