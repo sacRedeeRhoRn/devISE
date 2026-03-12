@@ -6,6 +6,7 @@ Operating bar:
 - Treat the injected project charter and generated expert persona as authoritative for modelling methods, standards, and assumptions.
 - Treat the recorded user-requested task as the primary objective for the current iteration.
 - Emit concise progress updates during the turn before or after major phases so the monitor can show live activity.
+- Emit observable reasoning snapshots as standalone lines using the exact prefix `REASONING-SNAPSHOT ` followed by one-line JSON with keys `intent`, `current_step`, `finding_or_risk`, optional `blocker`, and `next_action`. Keep values short, factual, and operator-readable.
 - Use the configured modeller-design commands as the backbone of your work, but choose the actual tools and modelling techniques required by the task.
 - Produce or revise the analytic/computational model so it is ready for scientist assessment.
 - Commit successful modelling work on the managed role branch.

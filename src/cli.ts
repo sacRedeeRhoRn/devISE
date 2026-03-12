@@ -4,9 +4,9 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { RoleService } from "./lib/service.js";
+import { startDashboard } from "./lib/dashboard.js";
 import { repoRootFromModule } from "./lib/paths.js";
 import { activeRolesForLoopKind, ROLE_KINDS } from "./lib/types.js";
-import { startWatch } from "./lib/watch.js";
 import { startMcpServer } from "./mcp/server.js";
 
 async function main(): Promise<void> {
@@ -169,7 +169,16 @@ async function main(): Promise<void> {
 
     case "watch": {
       const projectRoot = rest[0] ?? process.cwd();
-      await startWatch(service, projectRoot);
+      await startDashboard(service, {
+        selector: projectRoot,
+        projectFocus: true,
+      });
+      return;
+    }
+
+    case "dashboard": {
+      const selector = rest[0];
+      await startDashboard(service, { selector });
       return;
     }
 
@@ -215,6 +224,7 @@ function printUsage(): never {
   devISE stage-launch --project-root <path> --start-role <developer|debugger|scientist|modeller> --task <text>
   devISE flight --project-root <path>
   devISE land --project-root <path>
+  devISE dashboard [project-root|project-id|portfolio-id]
   devISE watch [project-root|project-id]
   devISE serve
   devISE run-loop --project-root <path> --start-role <developer|debugger|scientist|modeller> --task <text>`);

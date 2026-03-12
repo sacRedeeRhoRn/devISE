@@ -16,6 +16,9 @@ import {
   loadRuntimeState,
   resolveControllerLogPath,
   resolveRuntimeStatePath,
+  resolveWatchEventsPath,
+  projectDomain,
+  projectTitle,
   saveRuntimeState,
 } from "./project.js";
 import {
@@ -33,12 +36,18 @@ import {
   type CreateProjectInput,
   type LoopStartInput,
   type MoveProjectInput,
+  type ManagedProjectOverview,
+  type PortfolioOverview,
   type ProjectConfig,
+  type ReasoningSnapshot,
   type RegistryEntry,
+  type RegistryOverview,
   type RuntimeState,
   type SessionSummary,
   type StageLaunchInput,
   type RoleKind,
+  ROLE_KINDS,
+  type WatchEventRecord,
 } from "./types.js";
 
 interface RoleServiceOptions {
@@ -123,6 +132,75 @@ export class RoleService {
     return projects;
   }
 
+  async listRegistryOverview(): Promise<RegistryOverview> {
+    const registry = await loadRegistry();
+    const portfolios: PortfolioOverview[] = registry.projects
+      .filter((entry): entry is Extract<RegistryEntry, { kind: "portfolio" }> => entry.kind === "portfolio")
+      .map((entry) => ({
+        kind: "portfolio",
+        id: entry.id,
+        title: entry.title,
+        goal: entry.goal,
+        summary: entry.summary,
+        domain: entry.domain,
+        updatedAt: entry.updatedAt,
+        projects: [],
+      }));
+    const portfolioById = new Map(portfolios.map((portfolio) => [portfolio.id, portfolio]));
+    const topLevelProjects: ManagedProjectOverview[] = [];
+    const allProjects: ManagedProjectOverview[] = [];
+
+    for (const entry of registry.projects) {
+      if (entry.kind !== "managed_project") {
+        continue;
+      }
+      if (!(await hasManagedProjectConfig(entry.root))) {
+        continue;
+      }
+
+      try {
+        const project = await loadProjectConfig(entry.root);
+        const runtime = await loadRuntimeState(entry.root);
+        const controllerAlive = syncControllerState(runtime);
+        if (runtime.loop.status === "orphaned" && !controllerAlive) {
+          await saveRuntimeState(runtime);
+        }
+        const watchSummary = await readLatestWatchSummary(entry.root);
+        const overview = buildManagedProjectOverview(
+          entry,
+          project,
+          runtime,
+          controllerAlive,
+          watchSummary,
+        );
+        allProjects.push(overview);
+
+        const parent = entry.parentId ? portfolioById.get(entry.parentId) : undefined;
+        if (parent) {
+          parent.projects.push(overview);
+        } else {
+          topLevelProjects.push(overview);
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    portfolios.sort(comparePortfolioOverview);
+    for (const portfolio of portfolios) {
+      portfolio.projects.sort(compareManagedProjectOverview);
+    }
+    topLevelProjects.sort(compareManagedProjectOverview);
+
+    return {
+      portfolios,
+      topLevelProjects,
+      runningProjects: allProjects
+        .filter((project) => project.loopStatus === "running")
+        .sort(compareManagedProjectOverview),
+    };
+  }
+
   async resolveCurrentSession(projectRoot: string): Promise<SessionSummary | null> {
     const sessions = await this.listRecentSessions(projectRoot, 10);
     return sessions[0] ?? null;
@@ -157,7 +235,18 @@ export class RoleService {
     try {
       const developerInstructions = await this.roleInstructions(project, input.role);
       let thread: ThreadLike;
-      if (input.mode === "current") {
+      if (input.mode === "new") {
+        await client.connect();
+        thread = await client.startThread({
+          cwd: project.project.root,
+          approvalPolicy: "never",
+          sandbox: "danger-full-access",
+          developerInstructions,
+          personality: "pragmatic",
+          experimentalRawEvents: false,
+          persistExtendedHistory: true,
+        });
+      } else if (input.mode === "current") {
         const currentThreadId =
           input.currentThreadId ?? (await this.resolveCurrentSession(projectRoot))?.threadId;
         if (!currentThreadId) {
@@ -193,7 +282,12 @@ export class RoleService {
         role: input.role,
         threadId: thread.id,
         threadName,
-        sourceMode: input.mode === "current" ? "current" : "fork",
+        sourceMode:
+          input.mode === "new"
+            ? "new"
+            : input.mode === "current"
+              ? "current"
+              : "fork",
         sourceThreadId: input.mode === "old" ? input.threadId : undefined,
         assignedAt: new Date().toISOString(),
       };
@@ -395,6 +489,187 @@ function toSessionSummary(thread: ThreadLike): SessionSummary {
     name: thread.name,
     source: thread.source,
   };
+}
+
+function buildManagedProjectOverview(
+  entry: Extract<RegistryEntry, { kind: "managed_project" }>,
+  project: ProjectConfig,
+  runtime: RuntimeState,
+  controllerAlive: boolean,
+  watchSummary: {
+    lastEventAt?: string;
+    latestReasoning?: string;
+    latestReasoningRole?: RoleKind;
+  },
+): ManagedProjectOverview {
+  const armed = Boolean(runtime.launch.stagedStartRole && runtime.launch.stagedTask);
+  return {
+    kind: "managed_project",
+    id: entry.id,
+    root: entry.root,
+    parentId: entry.parentId,
+    title: projectTitle(project),
+    summary: project.summary ?? project.charter?.continuity_summary ?? project.goal,
+    domain: projectDomain(project),
+    loopKind: project.loop_kind,
+    loopStatus: runtime.loop.status,
+    activeRole: activeRoleFromRuntime(runtime),
+    iteration: runtime.loop.iteration,
+    task: runtime.loop.task ?? runtime.launch.stagedTask,
+    armed,
+    controllerAlive,
+    assignedRoles: Object.keys(runtime.roles).filter(isRoleKind),
+    lastEventAt: watchSummary.lastEventAt,
+    latestReasoning: watchSummary.latestReasoning,
+    latestReasoningRole: watchSummary.latestReasoningRole,
+    updatedAt: latestProjectUpdateAt(entry.updatedAt, runtime, watchSummary.lastEventAt),
+  };
+}
+
+async function readLatestWatchSummary(
+  projectRoot: string,
+): Promise<{ lastEventAt?: string; latestReasoning?: string; latestReasoningRole?: RoleKind }> {
+  const watchEventsPath = await resolveWatchEventsPath(projectRoot);
+  let raw = "";
+  try {
+    raw = await fs.readFile(watchEventsPath, "utf8");
+  } catch {
+    return {};
+  }
+
+  let lastEventAt: string | undefined;
+  let latestReasoning: string | undefined;
+  let latestReasoningRole: RoleKind | undefined;
+
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    try {
+      const event = JSON.parse(lines[index]!) as WatchEventRecord;
+      lastEventAt ??= event.at;
+      if (!latestReasoning) {
+        const reasoning = summarizeWatchEventReasoning(event);
+        if (reasoning) {
+          latestReasoning = reasoning;
+          latestReasoningRole = event.role;
+        }
+      }
+      if (lastEventAt && latestReasoning) {
+        break;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return {
+    lastEventAt,
+    latestReasoning,
+    latestReasoningRole,
+  };
+}
+
+function summarizeWatchEventReasoning(event: WatchEventRecord): string | undefined {
+  if (event.reasoning) {
+    return summarizeReasoningSnapshot(event.reasoning);
+  }
+  if (event.kind !== "commentary") {
+    return undefined;
+  }
+  const trimmed = event.message.trim();
+  return trimmed ? truncate(trimmed, 120) : undefined;
+}
+
+function summarizeReasoningSnapshot(snapshot: ReasoningSnapshot): string {
+  const finding = snapshot.blocker?.trim() || snapshot.finding_or_risk.trim();
+  return truncate(
+    `${snapshot.current_step.trim()} | ${finding} | next: ${snapshot.next_action.trim()}`,
+    120,
+  );
+}
+
+function latestProjectUpdateAt(
+  fallback: string,
+  runtime: RuntimeState,
+  lastEventAt?: string,
+): string {
+  const candidates = [
+    fallback,
+    lastEventAt,
+    runtime.loop.endedAt,
+    runtime.loop.startedAt,
+    runtime.launch.stagedAt,
+    ...Object.values(runtime.roles).flatMap((role) => (role?.assignedAt ? [role.assignedAt] : [])),
+    ...runtime.history.flatMap((record) => (record.at ? [record.at] : [])),
+  ].filter(Boolean);
+
+  return candidates.sort((left, right) => right!.localeCompare(left!))[0] ?? fallback;
+}
+
+function activeRoleFromRuntime(runtime: RuntimeState): RoleKind | "none" {
+  if (runtime.loop.status === "running") {
+    return runtime.loop.lastRole ?? runtime.loop.startRole ?? "none";
+  }
+  return runtime.loop.lastRole ?? "none";
+}
+
+function compareManagedProjectOverview(
+  left: ManagedProjectOverview,
+  right: ManagedProjectOverview,
+): number {
+  const leftRank = attentionRank(left);
+  const rightRank = attentionRank(right);
+  if (leftRank !== rightRank) {
+    return leftRank - rightRank;
+  }
+  if (left.updatedAt !== right.updatedAt) {
+    return right.updatedAt.localeCompare(left.updatedAt);
+  }
+  return left.title.localeCompare(right.title);
+}
+
+function comparePortfolioOverview(left: PortfolioOverview, right: PortfolioOverview): number {
+  if (left.updatedAt !== right.updatedAt) {
+    return right.updatedAt.localeCompare(left.updatedAt);
+  }
+  return left.title.localeCompare(right.title);
+}
+
+function attentionRank(project: ManagedProjectOverview): number {
+  if (project.loopStatus === "blocked" || project.loopStatus === "failed" || project.loopStatus === "orphaned") {
+    return 0;
+  }
+  if (project.loopStatus === "running" && isStale(project.lastEventAt)) {
+    return 1;
+  }
+  if (project.loopStatus === "running") {
+    return 2;
+  }
+  if (project.armed) {
+    return 3;
+  }
+  if (project.loopStatus === "completed") {
+    return 5;
+  }
+  return 4;
+}
+
+function isStale(lastEventAt?: string): boolean {
+  if (!lastEventAt) {
+    return false;
+  }
+  return Date.now() - Date.parse(lastEventAt) > 5 * 60 * 1000;
+}
+
+function isRoleKind(value: string): value is RoleKind {
+  return ROLE_KINDS.includes(value as RoleKind);
+}
+
+function truncate(input: string, maxLength: number): string {
+  return input.length <= maxLength ? input : `${input.slice(0, maxLength - 1)}…`;
 }
 
 function processExists(pid: number): boolean {

@@ -47,6 +47,7 @@ interface WatchRolePanel {
   tone: Tone;
   threadId: string;
   personaSummary: string;
+  latestReasoning?: string;
   latestLabel: string;
   artifactName: string;
   commitSha: string;
@@ -324,6 +325,8 @@ export function parseControllerLogFallback(text: string): WatchEventRecord[] {
         ? "turn_completed"
         : line.includes("event=turn_started")
           ? "turn_started"
+          : line.includes("event=reasoning_snapshot")
+            ? "reasoning_snapshot"
           : line.includes("event=loop_completed")
             ? "loop_completed"
             : line.includes("event=loop_blocked")
@@ -367,8 +370,22 @@ export function buildWatchModel(snapshot: MonitorSnapshot, spinnerIndex: number)
     headerNote: activity,
     timeline,
     feed,
-    roleA: buildRolePanel(snapshot.project, snapshot.runtime, snapshot.roleARecord, snapshot.roleAPreview, snapshot.roleA),
-    roleB: buildRolePanel(snapshot.project, snapshot.runtime, snapshot.roleBRecord, snapshot.roleBPreview, snapshot.roleB),
+    roleA: buildRolePanel(
+      snapshot.project,
+      snapshot.runtime,
+      snapshot.roleARecord,
+      snapshot.roleAPreview,
+      snapshot.roleA,
+      latestReasoningForRole(snapshot.events, snapshot.roleA),
+    ),
+    roleB: buildRolePanel(
+      snapshot.project,
+      snapshot.runtime,
+      snapshot.roleBRecord,
+      snapshot.roleBPreview,
+      snapshot.roleB,
+      latestReasoningForRole(snapshot.events, snapshot.roleB),
+    ),
   };
 }
 
@@ -611,6 +628,7 @@ function renderRolePanel(panel: WatchRolePanel): string {
   return [
     `${dim("thread")} ${escapeTags(panel.threadId)}`,
     `${dim("persona")} ${escapeTags(panel.personaSummary)}`,
+    `${dim("reasoning")} ${escapeTags(panel.latestReasoning ?? "No recent reasoning snapshot.")}`,
     `${dim("latest")} ${tone}{bold}${escapeTags(panel.latestLabel)}{/bold}{/}`,
     `${dim("artifact")} ${escapeTags(panel.artifactName)}`,
     `${dim("commit")} ${escapeTags(panel.commitSha)}`,
@@ -713,12 +731,13 @@ function buildFeed(events: WatchEventRecord[]): WatchFeedItem[] {
   return selected.map((event, index) => {
     const tone = toneForEvent(event);
     const stamp = event.at.slice(11, 19);
+    const headline = eventHeadline(event);
     const label =
       `{gray-fg}${stamp}{/gray-fg} ` +
       `${event.role ? `${roleBadge(event.role)} ` : ""}` +
-      `${toneTag(tone)}${escapeTags(truncate(event.message, 72))}{/}`;
+      `${toneTag(tone)}${escapeTags(truncate(headline, 72))}{/}`;
     const detailLines = [
-      `{bold}${escapeTags(event.message)}{/bold}`,
+      `{bold}${escapeTags(headline)}{/bold}`,
       `${dim("at")} ${escapeTags(event.at)}`,
       `${dim("kind")} ${escapeTags(event.kind)}`,
       `${dim("role")} ${escapeTags(event.role ?? "none")}`,
@@ -728,6 +747,17 @@ function buildFeed(events: WatchEventRecord[]): WatchFeedItem[] {
       `${dim("artifact")} ${escapeTags(event.artifactPath ?? "n/a")}`,
       `${dim("commit")} ${escapeTags(event.commitSha ?? "n/a")}`,
       `${dim("command")} ${escapeTags(event.command ?? "n/a")}`,
+      ...(event.reasoning
+        ? [
+            "",
+            "{bold}Reasoning snapshot{/bold}",
+            `${dim("intent")} ${escapeTags(event.reasoning.intent)}`,
+            `${dim("step")} ${escapeTags(event.reasoning.current_step)}`,
+            `${dim("finding")} ${escapeTags(event.reasoning.finding_or_risk)}`,
+            `${dim("blocker")} ${escapeTags(event.reasoning.blocker ?? "n/a")}`,
+            `${dim("next")} ${escapeTags(event.reasoning.next_action)}`,
+          ]
+        : []),
       "",
       event.outputPreview
         ? `{bold}Output preview{/bold}\n${escapeTags(event.outputPreview)}`
@@ -749,6 +779,7 @@ function buildRolePanel(
   record: IterationRecord | undefined,
   preview: string[],
   role: RoleKind,
+  latestReasoning?: string,
 ): WatchRolePanel {
   const artifactName = record?.artifactPath ? path.basename(record.artifactPath) : "none";
   const commitSha = record?.commitSha ? record.commitSha.slice(0, 12) : runtime.loop.lastCommitSha?.slice(0, 12) ?? "none";
@@ -766,6 +797,7 @@ function buildRolePanel(
     tone: role,
     threadId,
     personaSummary: summarizeRolePersona(project, role),
+    latestReasoning,
     latestLabel,
     artifactName,
     commitSha,
@@ -775,6 +807,7 @@ function buildRolePanel(
       `{bold}${capitalizeRole(role)} lane{/bold}`,
       `${dim("thread")} ${escapeTags(threadId)}`,
       `${dim("persona")} ${escapeTags(summarizeRolePersona(project, role))}`,
+      `${dim("reasoning")} ${escapeTags(latestReasoning ?? "No recent reasoning snapshot.")}`,
       `${dim("latest")} ${escapeTags(latestLabel)}`,
       `${dim("artifact")} ${escapeTags(artifactName)}`,
       `${dim("commit")} ${escapeTags(commitSha)}`,
@@ -818,6 +851,29 @@ async function readArtifactPreview(artifactPath?: string): Promise<string[]> {
     .map((line) => line.trimEnd())
     .filter(Boolean)
     .slice(0, 12);
+}
+
+function latestReasoningForRole(events: WatchEventRecord[], role: RoleKind): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.role !== role) {
+      continue;
+    }
+    if (event.reasoning) {
+      return `${event.reasoning.current_step} | next: ${event.reasoning.next_action}`;
+    }
+    if (event.kind === "commentary") {
+      return truncate(event.message, 96);
+    }
+  }
+  return undefined;
+}
+
+function eventHeadline(event: WatchEventRecord): string {
+  if (event.reasoning) {
+    return `${event.reasoning.current_step} | next: ${event.reasoning.next_action}`;
+  }
+  return event.message;
 }
 
 function toneForEvent(event: WatchEventRecord): Tone {

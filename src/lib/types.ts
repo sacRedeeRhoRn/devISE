@@ -121,6 +121,14 @@ export interface IterationRecord {
   at: string;
 }
 
+export interface ReasoningSnapshot {
+  intent: string;
+  current_step: string;
+  finding_or_risk: string;
+  blocker?: string;
+  next_action: string;
+}
+
 export type WatchEventKind =
   | "loop_started"
   | "loop_completed"
@@ -130,6 +138,7 @@ export type WatchEventKind =
   | "turn_completed"
   | "turn_status"
   | "commentary"
+  | "reasoning_snapshot"
   | "command_started"
   | "command_finished"
   | "artifact_written"
@@ -150,6 +159,7 @@ export interface WatchEventRecord {
   outputPreview?: string;
   artifactPath?: string;
   commitSha?: string;
+  reasoning?: ReasoningSnapshot;
 }
 
 export interface LaunchState {
@@ -261,9 +271,48 @@ export interface SessionSummary {
 export interface AssignmentInput {
   projectRoot: string;
   role: RoleKind;
-  mode: "current" | "old";
+  mode: "new" | "current" | "old";
   threadId?: string;
   currentThreadId?: string;
+}
+
+export interface ManagedProjectOverview {
+  kind: "managed_project";
+  id: string;
+  root: string;
+  parentId?: string;
+  title: string;
+  summary: string;
+  domain?: string;
+  loopKind: LoopKind;
+  loopStatus: LoopStatus;
+  activeRole: RoleKind | "none";
+  iteration: number;
+  task?: string;
+  armed: boolean;
+  controllerAlive: boolean;
+  assignedRoles: RoleKind[];
+  lastEventAt?: string;
+  latestReasoning?: string;
+  latestReasoningRole?: RoleKind;
+  updatedAt: string;
+}
+
+export interface PortfolioOverview {
+  kind: "portfolio";
+  id: string;
+  title: string;
+  goal: string;
+  summary: string;
+  domain?: string;
+  updatedAt: string;
+  projects: ManagedProjectOverview[];
+}
+
+export interface RegistryOverview {
+  portfolios: PortfolioOverview[];
+  topLevelProjects: ManagedProjectOverview[];
+  runningProjects: ManagedProjectOverview[];
 }
 
 export interface LoopStartInput {

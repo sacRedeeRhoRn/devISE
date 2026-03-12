@@ -80,3 +80,60 @@ test("observable turn events capture commentary and command progress without fin
   assert.equal(events[2]?.kind, "command_finished");
   assert.match(events[2]?.outputPreview ?? "", /3 passed/);
 });
+
+test("observable turn events promote reasoning snapshots into structured events", () => {
+  const events = observableTurnEventsForTest(
+    {
+      id: "turn-2",
+      status: "inProgress",
+      items: [
+        {
+          id: "item-1",
+          type: "agentMessage",
+          text: [
+            'REASONING-SNAPSHOT {"intent":"confirm restart stability","current_step":"comparing the staged restart path with the live process state","finding_or_risk":"the restart path may leave a stale worker behind","blocker":"worker pid is still present after restart","next_action":"inspect the process table after restart"}',
+            "Inspecting the process table before deciding whether the restart logic is safe.",
+          ].join("\n"),
+        },
+      ],
+    },
+    "debugger",
+    4,
+    "thread-2",
+  );
+
+  assert.equal(events.length, 2);
+  assert.equal(events[0]?.kind, "reasoning_snapshot");
+  assert.equal(events[0]?.reasoning?.intent, "confirm restart stability");
+  assert.match(events[0]?.message ?? "", /restart path/);
+  assert.equal(events[1]?.kind, "commentary");
+  assert.match(events[1]?.message ?? "", /Inspecting the process table/);
+});
+
+test("observable turn events promote reasoning snapshots into structured events", () => {
+  const events = observableTurnEventsForTest(
+    {
+      id: "turn-2",
+      status: "inProgress",
+      items: [
+        {
+          id: "item-1",
+          type: "agentMessage",
+          text: [
+            'REASONING-SNAPSHOT {"intent":"Verify runtime health","current_step":"Check the watch stream","finding_or_risk":"watch stream is healthy","next_action":"keep monitoring"}',
+            "Keeping an eye on controller churn while the run is active.",
+          ].join("\n"),
+        },
+      ],
+    },
+    "debugger",
+    3,
+    "thread-2",
+  );
+
+  assert.equal(events.length, 2);
+  assert.equal(events[0]?.kind, "reasoning_snapshot");
+  assert.equal(events[0]?.reasoning?.current_step, "Check the watch stream");
+  assert.equal(events[1]?.kind, "commentary");
+  assert.match(events[1]?.message ?? "", /controller churn/);
+});

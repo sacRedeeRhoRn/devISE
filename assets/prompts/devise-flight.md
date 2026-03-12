@@ -1,5 +1,4 @@
----
-description: Launch the staged automatic devISE loop
+description: Compatibility launcher for a staged automatic devISE loop
 argument-hint: [project-root]
 ---
 
@@ -17,3 +16,4 @@ Behavior:
 6. If both roles are assigned and a staged launch is present, call `devise.start_loop` with the project root only so the controller uses the staged launch state.
 7. After launch, confirm the project id, pid, start role, and task.
 8. Explain that the loop is now automatic and the enrolled active-role threads should not be manually driven until the loop completes, blocks, fails, or is landed with `/devise-land`.
+9. Mention that `/devise` can now also perform the same launch from the normal one-shot workflow, so this command is mainly for staged or compatibility flows.

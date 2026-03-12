@@ -32,6 +32,7 @@ import {
   type ControllerTurnResult,
   type LoopStartInput,
   type ProjectConfig,
+  type ReasoningSnapshot,
   type RoleKind,
   type RuntimeState,
   type WatchEventRecord,
@@ -722,7 +723,25 @@ function extractObservableTurnEvents(
 
   for (const item of turn.items) {
     if (item.type === "agentMessage") {
-      const text = normalizeMessage(extractItemText(item));
+      const rawText = extractItemText(item);
+      const { snapshots, commentary } = extractReasoningSnapshots(rawText);
+      for (const snapshot of snapshots) {
+        events.push({
+          version: 1,
+          at: new Date().toISOString(),
+          kind: "reasoning_snapshot",
+          iteration,
+          role,
+          status: turn.status,
+          threadId,
+          itemId: item.id,
+          itemType: item.type,
+          reasoning: snapshot,
+          message: formatReasoningSnapshotMessage(role, snapshot),
+        });
+      }
+
+      const text = normalizeMessage(commentary);
       if (!text || looksLikeJsonObject(text)) {
         continue;
       }
@@ -1113,6 +1132,87 @@ function looksLikeJsonObject(text: string): boolean {
 
 function capitalizeRole(role: RoleKind): string {
   return roleTitle(role);
+}
+
+const REASONING_SNAPSHOT_PREFIX = "REASONING-SNAPSHOT ";
+
+function extractReasoningSnapshots(
+  text: string,
+): { snapshots: ReasoningSnapshot[]; commentary: string } {
+  if (!text.trim()) {
+    return { snapshots: [], commentary: "" };
+  }
+
+  const snapshots: ReasoningSnapshot[] = [];
+  const commentaryLines: string[] = [];
+
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith(REASONING_SNAPSHOT_PREFIX)) {
+      commentaryLines.push(line);
+      continue;
+    }
+
+    const snapshot = parseReasoningSnapshot(
+      trimmed.slice(REASONING_SNAPSHOT_PREFIX.length).trim(),
+    );
+    if (snapshot) {
+      snapshots.push(snapshot);
+      continue;
+    }
+
+    commentaryLines.push(line);
+  }
+
+  return {
+    snapshots,
+    commentary: commentaryLines.join("\n"),
+  };
+}
+
+function parseReasoningSnapshot(raw: string): ReasoningSnapshot | undefined {
+  try {
+    const parsed = JSON.parse(raw) as Partial<ReasoningSnapshot>;
+    if (
+      typeof parsed.intent !== "string" ||
+      typeof parsed.current_step !== "string" ||
+      typeof parsed.finding_or_risk !== "string" ||
+      typeof parsed.next_action !== "string"
+    ) {
+      return undefined;
+    }
+
+    const snapshot: ReasoningSnapshot = {
+      intent: parsed.intent.trim(),
+      current_step: parsed.current_step.trim(),
+      finding_or_risk: parsed.finding_or_risk.trim(),
+      next_action: parsed.next_action.trim(),
+    };
+    if (
+      !snapshot.intent ||
+      !snapshot.current_step ||
+      !snapshot.finding_or_risk ||
+      !snapshot.next_action
+    ) {
+      return undefined;
+    }
+    if (typeof parsed.blocker === "string" && parsed.blocker.trim()) {
+      snapshot.blocker = parsed.blocker.trim();
+    }
+    return snapshot;
+  } catch {
+    return undefined;
+  }
+}
+
+function formatReasoningSnapshotMessage(
+  role: RoleKind,
+  snapshot: ReasoningSnapshot,
+): string {
+  const blocker = snapshot.blocker?.trim()
+    ? ` blocker: ${snapshot.blocker.trim()}`
+    : "";
+  return `${capitalizeRole(role)} reasoning: ${snapshot.current_step.trim()} | ${snapshot.finding_or_risk.trim()} | next: ${snapshot.next_action.trim()}${blocker}`;
 }
 
 function delay(ms: number): Promise<void> {

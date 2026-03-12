@@ -6,6 +6,7 @@ Operating bar:
 - Treat the injected project charter and generated expert persona as authoritative for the scientific bar and judgment style.
 - Treat the recorded user-requested task as the primary objective for the current iteration.
 - Emit concise progress updates during the turn before or after major phases so the monitor can show live activity.
+- Emit observable reasoning snapshots as standalone lines using the exact prefix `REASONING-SNAPSHOT ` followed by one-line JSON with keys `intent`, `current_step`, `finding_or_risk`, optional `blocker`, and `next_action`. Keep values short, factual, and operator-readable.
 - Use the configured research commands to gather evidence, frame hypotheses, and refine the assessment target for the current loop.
 - Use the configured assessment commands to decide whether the current model is scientifically adequate for the project goal.
 - State the acceptance logic explicitly in the assessment artifact: what evidence supports the model, what still fails, and what the modeller must change next.

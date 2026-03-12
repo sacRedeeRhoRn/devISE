@@ -175,10 +175,16 @@ test("buildWatchModel prioritizes live feed, timeline, and active role snapshots
         {
           version: 1,
           at: "2026-03-13T02:06:30.000Z",
-          kind: "commentary",
+          kind: "reasoning_snapshot",
           role: "scientist",
           iteration: 3,
-          message: "Re-checking whether the revised model now clears the acceptance bar.",
+          message: "Scientist reasoning: re-check the assessment gate | one acceptance gap remains | next: inspect the revised closure",
+          reasoning: {
+            intent: "re-check the assessment gate",
+            current_step: "inspect the revised closure",
+            finding_or_risk: "one acceptance gap remains",
+            next_action: "re-run the parity check",
+          },
         },
       ],
       roleARecord: runtime.history[0],
@@ -193,8 +199,9 @@ test("buildWatchModel prioritizes live feed, timeline, and active role snapshots
   assert.equal(model.projectDomain, "Quantum Transport");
   assert.equal(model.timeline.length, 3);
   assert.equal(model.feed.length, 2);
-  assert.match(model.feed[0]?.detail ?? "", /acceptance bar/);
+  assert.match(model.feed[0]?.detail ?? "", /Reasoning snapshot/i);
   assert.equal(model.roleA.artifactName, "scientist-assessment.md");
   assert.equal(model.roleB.artifactName, "modeller-design-report.md");
   assert.match(model.roleA.personaSummary, /Landauer|Anderson|Datta/);
+  assert.match(model.roleA.latestReasoning ?? "", /inspect the revised closure/);
 });

@@ -125,6 +125,36 @@ function registerWorkflowNamespace(
   );
 
   server.registerTool(
+    `${namespace}.list_registry`,
+    {
+      description:
+        "List devISE portfolios and managed projects with parent-child relationships and live runtime summaries.",
+      inputSchema: {},
+    },
+    async () => {
+      const overview = await service.listRegistryOverview();
+      const lines = [
+        ...overview.portfolios.map(
+          (portfolio) =>
+            `portfolio ${portfolio.id}: ${portfolio.title} (${portfolio.projects.length} projects)`,
+        ),
+        ...overview.topLevelProjects.map(
+          (project) => `project ${project.id}: ${project.title} [${project.loopStatus}]`,
+        ),
+      ];
+      return {
+        content: [
+          {
+            type: "text",
+            text: lines.join("\n"),
+          },
+        ],
+        structuredContent: structured(overview),
+      };
+    },
+  );
+
+  server.registerTool(
     `${namespace}.move_project`,
     {
       description: "Logically move a managed project under a different portfolio or back to top-level.",
@@ -204,11 +234,11 @@ function registerWorkflowNamespace(
     `${namespace}.assign_role`,
     {
       description:
-        "Assign one active project role to the current session or to a forked old session.",
+        "Assign one active project role to a fresh managed session, the current session, or a forked old session.",
       inputSchema: {
         projectRoot: z.string(),
         role: z.enum(ROLE_KINDS),
-        mode: z.enum(["current", "old"]),
+        mode: z.enum(["new", "current", "old"]),
         threadId: z.string().optional(),
         currentThreadId: z.string().optional(),
       },

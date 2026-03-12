@@ -6,7 +6,12 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 
 import { RoleService } from "../src/lib/service.js";
-import { createProjectFiles, loadRuntimeState, saveRuntimeState } from "../src/lib/project.js";
+import {
+  createProjectFiles,
+  loadRuntimeState,
+  resolveWatchEventsPath,
+  saveRuntimeState,
+} from "../src/lib/project.js";
 import type { ThreadLike } from "../src/lib/appServerClient.js";
 import type { RoleKind } from "../src/lib/types.js";
 
@@ -231,6 +236,33 @@ test("assignRole applies generated expert instructions and visible priming for v
   assert.match(client.turnInputs[0] ?? "", /standing by/);
 });
 
+test("assignRole can create a fresh managed role session", async () => {
+  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-service-assign-new-"));
+  await createProjectFiles({
+    projectRoot,
+    loopKind: "developer-debugger",
+    goal: "Create fresh managed threads",
+    acceptance: ["managed threads can be provisioned automatically"],
+    dryTestCommands: ["npm test"],
+    useCommands: ["npm start"],
+  });
+
+  const client = new FakeServiceClient();
+  const service = makeService({
+    createClient: () => client as never,
+  });
+
+  const runtime = await service.assignRole({
+    projectRoot,
+    role: "developer",
+    mode: "new",
+  });
+
+  assert.equal(runtime.roles.developer?.sourceMode, "new");
+  assert.equal(client.startThreadParams?.cwd, projectRoot);
+  assert.equal(runtime.roles.developer?.threadId, "fresh-thread");
+});
+
 test("portfolio defaults are copied into new child projects and moveProject only changes registry linkage", async () => {
   const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "devise-home-"));
   const originalHome = process.env.HOME;
@@ -288,6 +320,86 @@ test("portfolio defaults are copied into new child projects and moveProject only
   }
 });
 
+test("listRegistryOverview groups portfolios and surfaces the latest reasoning summary", async () => {
+  const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "devise-home-overview-"));
+  const originalHome = process.env.HOME;
+  process.env.HOME = tmpHome;
+
+  try {
+    const service = makeService();
+    const portfolio = await service.createPortfolio({
+      title: "Runtime Programs",
+      goal: "Track all active runtime projects",
+      domain: "systems engineering",
+    });
+
+    const childRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-service-overview-child-"));
+    const child = await service.createProject({
+      projectRoot: childRoot,
+      loopKind: "developer-debugger",
+      headProjectId: portfolio.id,
+      goal: "Harden the runtime monitor",
+      acceptance: ["runtime monitor stays healthy"],
+      dryTestCommands: ["npm test"],
+      useCommands: ["npm start"],
+    });
+    const childRuntime = await loadRuntimeState(childRoot);
+    childRuntime.roles.developer = makeRoleSession("developer");
+    childRuntime.roles.debugger = makeRoleSession("debugger");
+    childRuntime.loop.status = "running";
+    childRuntime.loop.pid = process.pid;
+    childRuntime.loop.iteration = 3;
+    childRuntime.loop.startRole = "developer";
+    childRuntime.loop.lastRole = "debugger";
+    childRuntime.loop.task = "Track reasoning snapshots";
+    await saveRuntimeState(childRuntime);
+    await fs.writeFile(
+      await resolveWatchEventsPath(childRoot),
+      `${JSON.stringify({
+        version: 1,
+        at: "2026-03-13T03:00:00.000Z",
+        kind: "reasoning_snapshot",
+        role: "debugger",
+        iteration: 3,
+        message: "Debugger reasoning: Verify runtime health | watch stream healthy | next: keep monitoring",
+        reasoning: {
+          intent: "Verify runtime health",
+          current_step: "Check the watch stream",
+          finding_or_risk: "watch stream healthy",
+          next_action: "keep monitoring",
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const topLevelRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-service-overview-top-"));
+    await service.createProject({
+      projectRoot: topLevelRoot,
+      loopKind: "developer-debugger",
+      goal: "Standalone project",
+      acceptance: ["top-level projects remain visible"],
+      dryTestCommands: ["npm test"],
+      useCommands: ["npm start"],
+    });
+
+    const overview = await service.listRegistryOverview();
+
+    assert.equal(overview.portfolios.length, 1);
+    assert.equal(overview.portfolios[0]?.projects.length, 1);
+    assert.equal(overview.portfolios[0]?.projects[0]?.id, child.project.id);
+    assert.match(overview.portfolios[0]?.projects[0]?.latestReasoning ?? "", /Check the watch stream/);
+    assert.equal(overview.runningProjects[0]?.id, child.project.id);
+    assert.equal(overview.topLevelProjects.length, 1);
+  } finally {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    await fs.rm(tmpHome, { recursive: true, force: true });
+  }
+});
+
 async function assignActiveRoles(
   projectRoot: string,
   loopKind: "developer-debugger" | "scientist-modeller",
@@ -315,6 +427,7 @@ function makeRoleSession(role: RoleKind) {
 
 class FakeServiceClient extends EventEmitter {
   resumeParams?: Record<string, unknown>;
+  startThreadParams?: Record<string, unknown>;
   turnInputs: string[] = [];
   private readonly thread: ThreadLike = {
     id: "existing-thread",
@@ -337,6 +450,12 @@ class FakeServiceClient extends EventEmitter {
   }
 
   async forkThread(_params: Record<string, unknown>): Promise<ThreadLike> {
+    return this.thread;
+  }
+
+  async startThread(params: Record<string, unknown>): Promise<ThreadLike> {
+    this.startThreadParams = params;
+    this.thread.id = "fresh-thread";
     return this.thread;
   }
 
