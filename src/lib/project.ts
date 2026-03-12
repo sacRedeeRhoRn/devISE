@@ -35,7 +35,7 @@ export function sanitizeId(input: string): string {
 }
 
 export function defaultBranchName(projectId: string): string {
-  return `role/${projectId}/developer`;
+  return `devise/${projectId}/developer`;
 }
 
 export function defaultProjectConfig(input: CreateProjectInput): ProjectConfig {
@@ -54,11 +54,11 @@ export function defaultProjectConfig(input: CreateProjectInput): ProjectConfig {
       setup: input.setupCommands ?? [],
       dry_test:
         input.dryTestCommands ?? [
-          'printf "Set commands.dry_test in .codex-role/project.yaml\\n" && exit 1',
+          'printf "Set commands.dry_test in .devise/project.yaml\\n" && exit 1',
         ],
       use:
         input.useCommands ?? [
-          'printf "Set commands.use in .codex-role/project.yaml\\n" && exit 1',
+          'printf "Set commands.use in .devise/project.yaml\\n" && exit 1',
         ],
     },
     git: {
@@ -115,9 +115,9 @@ export async function createProjectFiles(
   await fs.writeFile(projectConfigPath(root), YAML.stringify(project), "utf8");
   await writeJsonFile(runtimeStatePath(root), runtime);
   await appendUniqueLines(path.join(root, ".gitignore"), [
-    ".codex-role/runtime.json",
-    ".codex-role/artifacts/",
-    ".codex-role/controller.log",
+    ".devise/runtime.json",
+    ".devise/artifacts/",
+    ".devise/controller.log",
   ]);
 
   return { project, runtime };

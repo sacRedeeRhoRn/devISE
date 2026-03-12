@@ -85,11 +85,11 @@ function valueForFlag(args: string[], flag: string): string | undefined {
 
 function printUsage(): never {
   console.error(`Usage:
-  codex-role install
-  codex-role doctor [project-root]
-  codex-role status [project-root]
-  codex-role serve
-  codex-role run-loop --project-root <path> --start-role <developer|debugger>`);
+  devISE install
+  devISE doctor [project-root]
+  devISE status [project-root]
+  devISE serve
+  devISE run-loop --project-root <path> --start-role <developer|debugger>`);
   process.exit(1);
 }
 

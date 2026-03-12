@@ -91,7 +91,7 @@ export class CodexAppServerClient extends EventEmitter {
 
     await this.request("initialize", {
       clientInfo: {
-        name: "codex-role",
+        name: "devISE",
         version: "0.1.0",
       },
       capabilities: {

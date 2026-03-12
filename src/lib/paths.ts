@@ -24,16 +24,16 @@ export function codexHome(): string {
     : path.join(os.homedir(), ".codex");
 }
 
-export function codexRoleHome(): string {
-  return path.join(os.homedir(), ".codex-role");
+export function deviseHome(): string {
+  return path.join(os.homedir(), ".devise");
 }
 
 export function promptInstallPath(): string {
-  return path.join(codexHome(), "prompts", "role.md");
+  return path.join(codexHome(), "prompts", "devise.md");
 }
 
 export function skillInstallRoot(): string {
-  return path.join(codexHome(), "skills", "role-project-planner");
+  return path.join(codexHome(), "skills", "devise-project-planner");
 }
 
 export function mcpConfigPath(): string {
@@ -41,11 +41,11 @@ export function mcpConfigPath(): string {
 }
 
 export function registryPath(): string {
-  return path.join(codexRoleHome(), "registry.json");
+  return path.join(deviseHome(), "registry.json");
 }
 
 export function projectStateDir(projectRoot: string): string {
-  return path.join(projectRoot, ".codex-role");
+  return path.join(projectRoot, ".devise");
 }
 
 export function projectConfigPath(projectRoot: string): string {

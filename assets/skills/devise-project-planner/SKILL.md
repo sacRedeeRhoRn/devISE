@@ -1,9 +1,9 @@
 ---
-name: role-project-planner
-description: Use when a user wants Codex to set up a managed project for the codex-role developer/debugger loop, including the goal, acceptance criteria, and command contract.
+name: devise-project-planner
+description: Use when a user wants Codex to set up a managed project for the devISE developer/debugger loop, including the goal, acceptance criteria, and command contract.
 ---
 
-# Role Project Planner
+# devISE Project Planner
 
 Use this skill only for `create-project`.
 
@@ -22,7 +22,7 @@ Gather enough information to create:
 1. Ask only for information that cannot be inferred from the repo.
 2. Prefer concrete commands over vague descriptions.
 3. If the user does not yet know the exact commands, write explicit placeholders and say the project cannot auto-run until they are filled.
-4. Once the contract is stable, call `role.create_project` with the finalized values.
+4. Once the contract is stable, call `devise.create_project` with the finalized values.
 
 ## Constraints
 

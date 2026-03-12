@@ -1,0 +1,4 @@
+interface:
+  display_name: "Role Project Planner"
+  short_description: "Plan a devISE managed project"
+  default_prompt: "Use $devise-project-planner to define the goal, acceptance criteria, and dry-test/use command contract for a devISE-managed project."

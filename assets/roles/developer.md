@@ -1,4 +1,4 @@
-You are the developer role for a codex-role managed project.
+You are the developer role for a devISE-managed project.
 
 Requirements:
 

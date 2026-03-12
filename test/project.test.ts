@@ -18,12 +18,12 @@ import { managedThreadName } from "../src/lib/controller.js";
 test("sanitizeId normalizes project ids", () => {
   assert.equal(sanitizeId("My Fancy Project!!"), "my-fancy-project");
   assert.equal(makeProjectId("/tmp/Hello World"), "hello-world");
-  assert.equal(defaultBranchName("hello-world"), "role/hello-world/developer");
-  assert.equal(managedThreadName("hello-world", "debugger"), "role:hello-world:debugger");
+  assert.equal(defaultBranchName("hello-world"), "devise/hello-world/developer");
+  assert.equal(managedThreadName("hello-world", "debugger"), "devISE:hello-world:debugger");
 });
 
 test("createProjectFiles writes spec, config, and runtime", async () => {
-  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-role-project-"));
+  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-project-"));
   const input = {
     projectRoot,
     goal: "Ship a looped role workflow",

@@ -380,7 +380,7 @@ async function loadRoleBaseInstructions(
 }
 
 export function managedThreadName(projectId: string, role: RoleKind): string {
-  return `role:${projectId}:${role}`;
+  return `devISE:${projectId}:${role}`;
 }
 
 function parseControllerTurnResult(text: string): ControllerTurnResult {
@@ -470,7 +470,7 @@ function validateRunnableProject(project: ProjectConfig): void {
   );
   if (placeholders.length > 0) {
     throw new Error(
-      `Project ${project.project.id} still contains placeholder commands in .codex-role/project.yaml`,
+      `Project ${project.project.id} still contains placeholder commands in .devise/project.yaml`,
     );
   }
 }

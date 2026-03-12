@@ -10,15 +10,15 @@ function structured(value: unknown): Record<string, unknown> {
 
 export async function startMcpServer(service: RoleService): Promise<void> {
   const server = new McpServer({
-    name: "codex-role",
+    name: "devISE",
     version: "0.1.0",
   });
 
   server.registerTool(
-    "role.create_project",
+    "devise.create_project",
     {
       description:
-        "Create a managed codex-role project scaffold with goal, acceptance criteria, and command contract.",
+        "Create a managed devISE project scaffold with goal, acceptance criteria, and command contract.",
       inputSchema: {
         projectRoot: z.string(),
         goal: z.string(),
@@ -45,9 +45,9 @@ export async function startMcpServer(service: RoleService): Promise<void> {
   );
 
   server.registerTool(
-    "role.list_projects",
+    "devise.list_projects",
     {
-      description: "List managed codex-role projects from the local registry.",
+      description: "List managed devISE projects from the local registry.",
       inputSchema: {},
     },
     async () => {
@@ -67,7 +67,7 @@ export async function startMcpServer(service: RoleService): Promise<void> {
   );
 
   server.registerTool(
-    "role.resolve_current_session",
+    "devise.resolve_current_session",
     {
       description:
         "Resolve the most recently updated interactive Codex session for the given project root.",
@@ -92,7 +92,7 @@ export async function startMcpServer(service: RoleService): Promise<void> {
   );
 
   server.registerTool(
-    "role.list_recent_sessions",
+    "devise.list_recent_sessions",
     {
       description: "List recent same-cwd Codex sessions for a managed project.",
       inputSchema: {
@@ -120,7 +120,7 @@ export async function startMcpServer(service: RoleService): Promise<void> {
   );
 
   server.registerTool(
-    "role.assign_role",
+    "devise.assign_role",
     {
       description:
         "Assign the developer or debugger role to the current session or to a forked old session.",
@@ -147,7 +147,7 @@ export async function startMcpServer(service: RoleService): Promise<void> {
   );
 
   server.registerTool(
-    "role.start_loop",
+    "devise.start_loop",
     {
       description:
         "Start the background developer/debugger loop for a managed project.",
@@ -171,7 +171,7 @@ export async function startMcpServer(service: RoleService): Promise<void> {
   );
 
   server.registerTool(
-    "role.get_status",
+    "devise.get_status",
     {
       description: "Get current runtime status for a managed project.",
       inputSchema: {
@@ -193,7 +193,7 @@ export async function startMcpServer(service: RoleService): Promise<void> {
   );
 
   server.registerTool(
-    "role.stop_loop",
+    "devise.stop_loop",
     {
       description: "Stop a running role controller for a managed project.",
       inputSchema: {

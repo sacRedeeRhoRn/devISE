@@ -1,10 +1,10 @@
 {
-  "name": "codex-role",
+  "name": "devISE",
   "version": "0.1.0",
-  "description": "Codex role orchestrator for managed developer/debugger project loops",
+  "description": "devISE orchestrator for managed developer/debugger project loops",
   "type": "module",
   "bin": {
-    "codex-role": "./dist/src/cli.js"
+    "devISE": "./dist/src/cli.js"
   },
   "files": [
     "dist",

@@ -4,7 +4,7 @@ import path from "node:path";
 import { ensureDir, pathExists } from "./fs.js";
 import { mcpConfigPath, promptInstallPath, skillInstallRoot } from "./paths.js";
 
-const MCP_SERVER_BLOCK_NAME = "codex_role";
+const MCP_SERVER_BLOCK_NAME = "devise";
 
 export interface InstallResult {
   promptPath: string;
@@ -13,8 +13,8 @@ export interface InstallResult {
 }
 
 export async function installAssets(repoRoot: string, cliEntrypoint: string): Promise<InstallResult> {
-  const promptSource = path.join(repoRoot, "assets", "prompts", "role.md");
-  const skillSource = path.join(repoRoot, "assets", "skills", "role-project-planner");
+  const promptSource = path.join(repoRoot, "assets", "prompts", "devise.md");
+  const skillSource = path.join(repoRoot, "assets", "skills", "devise-project-planner");
 
   await ensureDir(path.dirname(promptInstallPath()));
   await fs.copyFile(promptSource, promptInstallPath());
@@ -51,7 +51,7 @@ export async function doctor(repoRoot: string, cliEntrypoint: string): Promise<s
       : `MISSING MCP server block in ${configPath}`,
   );
   findings.push(
-    (await pathExists(path.join(repoRoot, "assets", "prompts", "role.md")))
+    (await pathExists(path.join(repoRoot, "assets", "prompts", "devise.md")))
       ? `OK local prompt asset present`
       : `MISSING local prompt asset`,
   );

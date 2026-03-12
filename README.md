@@ -1,6 +1,6 @@
-# codex-role
+# devISE
 
-`codex-role` installs a Codex custom prompt, a planning skill, and an MCP server that can manage long-running developer/debugger role loops against Codex threads.
+`devISE` installs a Codex custom prompt, a planning skill, and an MCP server that can manage long-running developer/debugger role loops against Codex threads.
 
 ## Commands
 
