@@ -277,7 +277,7 @@ async function hydrateRoleThreads(
         threadId: assigned.threadId,
         cwd: project.project.root,
         approvalPolicy: "never",
-        sandbox: "workspace-write",
+        sandbox: "danger-full-access",
         developerInstructions: await loadRoleBaseInstructions(repoRoot, role),
         persistExtendedHistory: true,
       });
@@ -289,7 +289,7 @@ async function hydrateRoleThreads(
     const thread = await client.startThread({
       cwd: project.project.root,
       approvalPolicy: "never",
-      sandbox: "workspace-write",
+      sandbox: "danger-full-access",
       developerInstructions: await loadRoleBaseInstructions(repoRoot, role),
       personality: "pragmatic",
       experimentalRawEvents: false,
@@ -335,7 +335,7 @@ async function runRoleTurn(
     threadId: roleSession.threadId,
     cwd: project.project.root,
     approvalPolicy: "never",
-    sandbox: "workspace-write",
+    sandbox: "danger-full-access",
     developerInstructions: await loadRoleBaseInstructions(repoRoot, role),
     persistExtendedHistory: true,
   });

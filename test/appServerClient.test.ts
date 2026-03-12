@@ -142,6 +142,72 @@ test("waitForTurnCompletion polls thread state when notifications are missing", 
   }
 });
 
+test("CodexAppServerClient approves managed access requests", async () => {
+  let fakeChild: FakeAppServerChild | undefined;
+  const client = new CodexAppServerClient({
+    spawnImpl() {
+      fakeChild = createFakeAppServerChild();
+      return fakeChild;
+    },
+  });
+
+  try {
+    await client.connect();
+    assert.ok(fakeChild);
+
+    const commandApproval = await fakeChild.requestClient(
+      41,
+      "item/commandExecution/requestApproval",
+      {
+        command: "ssh msj@example.com",
+      },
+    );
+    assert.deepEqual(commandApproval.result, { decision: "approve" });
+
+    const fileApproval = await fakeChild.requestClient(42, "item/fileChange/requestApproval", {
+      changes: [{ path: "/tmp/test.txt" }],
+    });
+    assert.deepEqual(fileApproval.result, { decision: "approve" });
+
+    const requestedPermissions = {
+      network: { mode: "enabled" },
+      filesystem: { mode: "full-access" },
+    };
+    const permissionsApproval = await fakeChild.requestClient(
+      43,
+      "item/permissions/requestApproval",
+      {
+        permissions: requestedPermissions,
+      },
+    );
+    assert.deepEqual(permissionsApproval.result, {
+      permissions: requestedPermissions,
+      scope: "session",
+    });
+
+    const execApproval = await fakeChild.requestClient(44, "execCommandApproval", {
+      command: ["qsub", "job.sh"],
+    });
+    assert.deepEqual(execApproval.result, { decision: "approved" });
+  } finally {
+    await client.close();
+  }
+});
+
+interface FakeAppServerChild extends ChildProcessWithoutNullStreams {
+  requestClient: (id: number, method: string, params?: unknown) => Promise<JsonRpcResponseLike>;
+}
+
+interface JsonRpcResponseLike {
+  jsonrpc: "2.0";
+  id: number;
+  result?: unknown;
+  error?: {
+    code: number;
+    message: string;
+  };
+}
+
 function createFakeAppServerChild(
   onRequest?: (
     request: { id?: number; method?: string; params?: unknown },
@@ -150,7 +216,7 @@ function createFakeAppServerChild(
       notify: (method: string, params: Record<string, unknown>) => void;
     },
   ) => boolean,
-): ChildProcessWithoutNullStreams {
+): FakeAppServerChild {
   class FakeChild extends EventEmitter {
     stdin = new PassThrough();
     stdout = new PassThrough();
@@ -164,6 +230,7 @@ function createFakeAppServerChild(
     exitCode: number | null = null;
     signalCode: NodeJS.Signals | null = null;
     private buffer = "";
+    private pendingClientResponses = new Map<number, (message: JsonRpcResponseLike) => void>();
 
     constructor() {
       super();
@@ -195,6 +262,20 @@ function createFakeAppServerChild(
       return true;
     }
 
+    requestClient(id: number, method: string, params?: unknown): Promise<JsonRpcResponseLike> {
+      return new Promise((resolve) => {
+        this.pendingClientResponses.set(id, resolve);
+        this.stdout.write(
+          `${JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            method,
+            params,
+          })}\n`,
+        );
+      });
+    }
+
     private handleLine(line: string): void {
       if (!line.trim()) {
         return;
@@ -203,7 +284,23 @@ function createFakeAppServerChild(
       const request = JSON.parse(line) as {
         id?: number;
         method?: string;
+        result?: unknown;
+        error?: {
+          code: number;
+          message: string;
+        };
       };
+      if (!request.method && request.id && this.pendingClientResponses.has(request.id)) {
+        this.pendingClientResponses.get(request.id)?.({
+          jsonrpc: "2.0",
+          id: request.id,
+          result: request.result,
+          error: request.error,
+        });
+        this.pendingClientResponses.delete(request.id);
+        return;
+      }
+
       if (request.method === "initialize" && request.id) {
         this.respond(request.id, { result: {} });
         return;
@@ -253,5 +350,5 @@ function createFakeAppServerChild(
     }
   }
 
-  return new FakeChild() as unknown as ChildProcessWithoutNullStreams;
+  return new FakeChild() as unknown as FakeAppServerChild;
 }

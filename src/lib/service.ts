@@ -121,7 +121,7 @@ export class RoleService {
           threadId: currentThreadId,
           cwd: project.project.root,
           approvalPolicy: "never",
-          sandbox: "workspace-write",
+          sandbox: "danger-full-access",
           persistExtendedHistory: true,
         });
       } else {
@@ -133,7 +133,7 @@ export class RoleService {
           threadId: input.threadId,
           cwd: project.project.root,
           approvalPolicy: "never",
-          sandbox: "workspace-write",
+          sandbox: "danger-full-access",
           persistExtendedHistory: true,
         });
       }

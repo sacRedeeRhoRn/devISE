@@ -424,17 +424,20 @@ export class CodexAppServerClient extends EventEmitter {
     let result: unknown;
     switch (request.method) {
       case "item/commandExecution/requestApproval":
-        result = { decision: "decline" };
+        result = { decision: "approve" };
         break;
       case "item/fileChange/requestApproval":
-        result = { decision: "decline" };
+        result = { decision: "approve" };
         break;
       case "item/permissions/requestApproval":
-        result = { permissions: {}, scope: "turn" };
+        result = {
+          permissions: requestedPermissions(request.params),
+          scope: "session",
+        };
         break;
       case "execCommandApproval":
       case "applyPatchApproval":
-        result = { decision: "denied" };
+        result = { decision: "approved" };
         break;
       case "item/tool/requestUserInput":
         result = { answers: {} };
@@ -461,4 +464,12 @@ export class CodexAppServerClient extends EventEmitter {
       })}\n`,
     );
   }
+}
+
+function requestedPermissions(params: unknown): unknown {
+  if (typeof params !== "object" || params === null || !("permissions" in params)) {
+    return {};
+  }
+
+  return (params as { permissions: unknown }).permissions ?? {};
 }

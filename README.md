@@ -80,3 +80,4 @@ Each managed project stores a command contract under `.devise/` or legacy `.code
 - `status` accepts either a project root or a registered project id.
 - The watcher shows observable progress only: role commentary, command activity, handoff/report excerpts, commits, and loop events. It does not expose hidden chain-of-thought.
 - Landing keeps role assignments but clears the staged launch, so the next automatic run must be re-armed from `/role`.
+- Managed developer/debugger threads now run with full host and network access. They can execute arbitrary local commands and remote operations such as SSH, qsub, package installs, and web retrieval when the task requires it.
