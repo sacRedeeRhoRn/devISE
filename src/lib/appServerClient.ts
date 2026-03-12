@@ -54,52 +54,24 @@ export class CodexAppServerClient extends EventEmitter {
   private nextId = 1;
   private pending = new Map<JsonRpcId, PendingRequest>();
   private ready = false;
+  private connecting?: Promise<void>;
 
   async connect(): Promise<void> {
     if (this.ready) {
       return;
     }
 
-    this.child = spawn("codex", ["app-server", "--listen", "stdio://"], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    if (this.connecting) {
+      await this.connecting;
+      return;
+    }
 
-    this.child.on("exit", (code, signal) => {
-      const error = new Error(
-        `codex app-server exited unexpectedly (code=${code ?? "null"}, signal=${signal ?? "null"})`,
-      );
-      for (const pending of this.pending.values()) {
-        pending.reject(error);
-      }
-      this.pending.clear();
-      this.ready = false;
-      this.emit("exit", error);
-    });
-
-    const stdoutReader = readline.createInterface({ input: this.child.stdout });
-    stdoutReader.on("line", (line) => {
-      if (line.trim().length === 0) {
-        return;
-      }
-      this.handleLine(line);
-    });
-
-    const stderrReader = readline.createInterface({ input: this.child.stderr });
-    stderrReader.on("line", (line) => {
-      this.emit("stderr", line);
-    });
-
-    await this.request("initialize", {
-      clientInfo: {
-        name: "devISE",
-        version: "0.1.0",
-      },
-      capabilities: {
-        experimentalApi: true,
-      },
-    });
-    this.sendNotification("initialized");
-    this.ready = true;
+    this.connecting = this.initializeConnection();
+    try {
+      await this.connecting;
+    } finally {
+      this.connecting = undefined;
+    }
   }
 
   async close(): Promise<void> {
@@ -195,6 +167,63 @@ export class CodexAppServerClient extends EventEmitter {
 
   async request<T>(method: string, params?: unknown): Promise<T> {
     await this.connect();
+    return this.requestOnce<T>(method, params);
+  }
+
+  private async initializeConnection(): Promise<void> {
+    this.child = spawn("codex", ["app-server", "--listen", "stdio://"], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    this.child.on("exit", (code, signal) => {
+      const error = new Error(
+        `codex app-server exited unexpectedly (code=${code ?? "null"}, signal=${signal ?? "null"})`,
+      );
+      for (const pending of this.pending.values()) {
+        pending.reject(error);
+      }
+      this.pending.clear();
+      this.ready = false;
+      this.emit("exit", error);
+    });
+
+    const stdoutReader = readline.createInterface({ input: this.child.stdout });
+    stdoutReader.on("line", (line) => {
+      if (line.trim().length === 0) {
+        return;
+      }
+      this.handleLine(line);
+    });
+
+    const stderrReader = readline.createInterface({ input: this.child.stderr });
+    stderrReader.on("line", (line) => {
+      this.emit("stderr", line);
+    });
+
+    try {
+      await this.requestOnce("initialize", {
+        clientInfo: {
+          name: "devISE",
+          version: "0.1.0",
+        },
+        capabilities: {
+          experimentalApi: true,
+        },
+      });
+      this.sendNotification("initialized");
+      this.ready = true;
+    } catch (error) {
+      this.ready = false;
+      const child = this.child;
+      this.child = undefined;
+      if (child && !child.killed) {
+        child.kill("SIGTERM");
+      }
+      throw error;
+    }
+  }
+
+  private async requestOnce<T>(method: string, params?: unknown): Promise<T> {
     const child = this.requireChild();
     const id = this.nextId++;
     const payload: JsonRpcRequest = {
