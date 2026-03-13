@@ -56,14 +56,18 @@ const ROLE_OUTPUT_SCHEMAS: Record<RoleKind, Record<string, unknown>> = {
     blocking_reason: nullableStringSchema(),
   }),
   debugger: strictObjectSchema({
-    status: { type: "string", enum: ["goal_met", "needs_fix", "blocked"] },
+    status: { type: "string", enum: ["goal_met", "needs_fix", "continue_monitoring", "blocked"] },
     use_passed: { type: "boolean" },
     summary: { type: "string" },
     report_path: { type: "string" },
     restart_performed: { type: "boolean" },
+    restart_result: {
+      type: "string",
+      enum: ["not_configured", "performed", "already_running", "failed"],
+    },
     monitor_result: {
       type: "string",
-      enum: ["not_configured", "caveat_observed", "process_ended", "timeout_reached"],
+      enum: ["not_configured", "caveat_observed", "process_ended", "timeout_reached", "still_running"],
     },
     evidence_sufficient: { type: "boolean" },
     monitoring_evidence: { type: "string" },
@@ -215,6 +219,22 @@ export async function runLoop(
       runtime.loop.lastReportPath = artifactPath ?? runtime.loop.lastReportPath;
       await saveRuntimeState(runtime);
 
+      if (shouldKeepCurrentRole(project, currentRole, result)) {
+        runtime.loop.status = "running";
+        runtime.loop.lastError = undefined;
+        runtime.loop.endedAt = undefined;
+        await saveRuntimeState(runtime);
+        await appendWatchEvent(project.project.root, {
+          kind: "commentary",
+          iteration,
+          role: currentRole,
+          status: "running",
+          artifactPath,
+          message: `${capitalizeRole(currentRole)} is keeping the baton and continuing live monitoring: ${result.summary}`,
+        });
+        continue;
+      }
+
       if (result.status === "blocked") {
         runtime.loop.status = "blocked";
         runtime.loop.lastError = result.blocking_reason ?? `${currentRole} reported blocked`;
@@ -293,10 +313,7 @@ async function runRoleTurn(
   );
   await ensureDir(artifactDir);
   const artifactPath = path.join(artifactDir, artifactFileNameForRole(role));
-  const counterpartArtifact =
-    runtime.loop.lastReportPath && (await pathExists(runtime.loop.lastReportPath))
-      ? runtime.loop.lastReportPath
-      : undefined;
+  const counterpartArtifact = await resolveCounterpartArtifact(project, runtime, role);
 
   const priorThread = await client.readThread(roleSession.threadId, true);
   const priorTurnCount = priorThread.turns.length;
@@ -877,16 +894,52 @@ function validateDebuggerTurnResult(project: ProjectConfig, result: ControllerTu
   const monitoringConfigured =
     (project.commands.monitor?.length ?? 0) > 0 ||
     (project.commands.monitor_until?.length ?? 0) > 0;
+  const continueMonitoring = result.status === "continue_monitoring";
 
-  if (restartConfigured && result.status !== "blocked" && result.restart_performed !== true) {
-    throw new Error("Debugger turn did not confirm executing the configured clean restart commands");
+  const restartHandled =
+    result.restart_result === "performed" ||
+    result.restart_result === "already_running" ||
+    result.restart_performed === true;
+
+  if (restartConfigured && result.status !== "blocked" && !restartHandled) {
+    throw new Error("Debugger turn did not confirm handling the configured clean restart commands");
+  }
+
+  if (!restartConfigured && result.restart_result === "not_configured") {
+    // valid explicit no-op
+  } else if (
+    restartConfigured &&
+    result.restart_result &&
+    !["performed", "already_running", "failed"].includes(result.restart_result)
+  ) {
+    throw new Error("Debugger turn reported an invalid restart_result for a configured restart contract");
+  }
+
+  if (result.restart_result === "performed" && result.restart_performed !== true) {
+    throw new Error("Debugger turn reported restart_result=performed without restart_performed=true");
+  }
+
+  if (result.restart_result === "already_running" && result.restart_performed === true) {
+    throw new Error("Debugger turn cannot report already_running together with restart_performed=true");
   }
 
   if (monitoringConfigured && result.monitor_result === "not_configured") {
     throw new Error("Debugger turn reported monitor_result=not_configured despite monitoring requirements");
   }
 
-  if (monitoringConfigured && result.status !== "blocked" && result.evidence_sufficient !== true) {
+  if (continueMonitoring && result.monitor_result !== "still_running") {
+    throw new Error("Debugger turn must report monitor_result=still_running when it keeps monitoring");
+  }
+
+  if (continueMonitoring && result.evidence_sufficient !== false) {
+    throw new Error("Debugger turn must keep evidence_sufficient=false while monitoring is still in progress");
+  }
+
+  if (continueMonitoring && result.blocking_reason) {
+    throw new Error("Debugger turn cannot report a blocking_reason when the live run is still progressing");
+  }
+
+  if (monitoringConfigured && result.status !== "blocked" && !continueMonitoring && result.evidence_sufficient !== true) {
     throw new Error("Debugger turn finished without enough monitoring evidence");
   }
 
@@ -912,6 +965,16 @@ function validateDebuggerTurnResult(project: ProjectConfig, result: ControllerTu
 }
 
 export const validateDebuggerTurnResultForTest = validateDebuggerTurnResult;
+
+function shouldKeepCurrentRole(
+  project: ProjectConfig,
+  role: RoleKind,
+  result: ControllerTurnResult,
+): boolean {
+  return project.loop_kind === "developer-debugger" && role === "debugger" && result.status === "continue_monitoring";
+}
+
+export const shouldKeepCurrentRoleForTest = shouldKeepCurrentRole;
 
 function validateScientistTurnResult(result: ControllerTurnResult): void {
   if (result.status === "goal_met" && result.assessment_passed !== true) {
@@ -1027,6 +1090,7 @@ async function recoverInvalidTurnResult(
         summary,
         report_path: artifactPath,
         restart_performed: false,
+        restart_result: (project.commands.restart?.length ?? 0) > 0 ? "failed" : "not_configured",
         monitor_result: debuggerMonitoringFallback(project),
         evidence_sufficient: false,
         monitoring_evidence: normalizeMessage(rawText),
@@ -1128,6 +1192,22 @@ function artifactPathFromResult(result: ControllerTurnResult): string | undefine
     result.model_report_path ??
     result.assessment_report_path
   );
+}
+
+async function resolveCounterpartArtifact(
+  project: ProjectConfig,
+  runtime: RuntimeState,
+  role: RoleKind,
+): Promise<string | undefined> {
+  const counterpart = counterpartRole(project, role);
+  const latestCounterpartRecord = [...runtime.history]
+    .reverse()
+    .find((record) => record.role === counterpart && record.artifactPath);
+  const candidate = latestCounterpartRecord?.artifactPath;
+  if (!candidate) {
+    return undefined;
+  }
+  return (await pathExists(candidate)) ? candidate : undefined;
 }
 
 function counterpartRole(project: ProjectConfig, role: RoleKind): RoleKind {

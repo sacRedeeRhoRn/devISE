@@ -341,7 +341,13 @@ export interface ControllerTurnResult {
   dry_test_passed?: boolean;
   use_passed?: boolean;
   restart_performed?: boolean;
-  monitor_result?: "not_configured" | "caveat_observed" | "process_ended" | "timeout_reached";
+  restart_result?: "not_configured" | "performed" | "already_running" | "failed";
+  monitor_result?:
+    | "not_configured"
+    | "caveat_observed"
+    | "process_ended"
+    | "timeout_reached"
+    | "still_running";
   evidence_sufficient?: boolean;
   monitoring_evidence?: string;
   observed_caveat?: string;

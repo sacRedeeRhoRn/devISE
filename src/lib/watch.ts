@@ -924,7 +924,14 @@ function statusToneOf(value: string): Tone {
   ) {
     return "ok";
   }
-  if (value === "running" || value === "inProgress" || value === "needs_fix" || value === "needs_model_changes") {
+  if (
+    value === "running" ||
+    value === "inProgress" ||
+    value === "needs_fix" ||
+    value === "needs_model_changes" ||
+    value === "continue_monitoring" ||
+    value === "still_running"
+  ) {
     return "warn";
   }
   if (value === "blocked" || value === "failed" || value === "orphaned" || value === "interrupted") {

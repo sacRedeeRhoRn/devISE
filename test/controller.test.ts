@@ -10,6 +10,7 @@ import {
   observableTurnEventsForTest,
   recoverInvalidTurnResultForTest,
   roleOutputSchemasForTest,
+  shouldKeepCurrentRoleForTest,
   validateDebuggerTurnResultForTest,
 } from "../src/lib/controller.js";
 import type { ProjectConfig } from "../src/lib/types.js";
@@ -42,6 +43,8 @@ test("role output schemas require every property and allow nullable optional fie
   assert.deepEqual(developerProperties.blocking_reason?.type, ["string", "null"]);
   assert.deepEqual(debuggerProperties.observed_caveat?.type, ["string", "null"]);
   assert.deepEqual(debuggerProperties.blocking_reason?.type, ["string", "null"]);
+  assert.equal(debuggerProperties.restart_result?.type, "string");
+  assert.equal(debuggerProperties.monitor_result?.type, "string");
   assert.equal(debuggerProperties.evidence_sufficient?.type, "boolean");
   assert.equal(debuggerProperties.monitoring_evidence?.type, "string");
   assert.equal(debuggerProperties.enhancement_targets?.type, "array");
@@ -228,6 +231,7 @@ test("debugger validation rejects shallow needs_fix results without monitoring e
         summary: "Collected only a short snapshot before writing the report.",
         report_path: "/tmp/debugger-report.md",
         restart_performed: true,
+        restart_result: "performed",
         monitor_result: "process_ended",
         evidence_sufficient: false,
         monitoring_evidence: "",
@@ -258,6 +262,7 @@ test("debugger validation accepts evidence-rich needs_fix results", () => {
       summary: "Monitoring established a repeatable frontier stall and clear next targets.",
       report_path: "/tmp/debugger-report.md",
       restart_performed: true,
+      restart_result: "performed",
       monitor_result: "caveat_observed",
       evidence_sufficient: true,
       monitoring_evidence:
@@ -271,6 +276,151 @@ test("debugger validation accepts evidence-rich needs_fix results", () => {
         "Add explicit logging when benchmark_summary.json is skipped.",
       ],
     }),
+  );
+});
+
+test("debugger validation accepts restart commands that report an already running workflow", () => {
+  const project = makeProjectConfig({
+    commands: {
+      setup: [],
+      dry_test: ["npm test"],
+      restart: ["./restart.sh"],
+      use: ["./run-real.sh"],
+      monitor: ["tail -f progress.log"],
+      monitor_until: ["worker_done"],
+      monitor_timeout_seconds: 300,
+    },
+  });
+
+  assert.doesNotThrow(() =>
+    validateDebuggerTurnResultForTest(project, {
+      status: "needs_fix",
+      use_passed: false,
+      summary: "Run stayed active, so the restart command reported already running and monitoring continued.",
+      report_path: "/tmp/debugger-report.md",
+      restart_performed: false,
+      restart_result: "already_running",
+      monitor_result: "caveat_observed",
+      evidence_sufficient: true,
+      monitoring_evidence:
+        "Restart command returned already_running, status/diagnose stayed healthy, and extended monitoring reproduced the warm-start caveat.",
+      observed_caveat: "true continuation warm-start is still not happening",
+      issues: [
+        "Weights reload, but optimizer, scheduler, epoch, and seeds still reset between iterations.",
+      ],
+      enhancement_targets: [
+        "Preserve optimizer, scheduler, and epoch state when using previous-member checkpoints.",
+        "Persist stable per-member seeds across iterations.",
+      ],
+    }),
+  );
+});
+
+test("debugger validation accepts continue_monitoring while a live run is still progressing", () => {
+  const project = makeProjectConfig({
+    commands: {
+      setup: [],
+      dry_test: ["npm test"],
+      restart: ["./restart.sh"],
+      use: ["./run-real.sh"],
+      monitor: ["tail -f progress.log"],
+      monitor_until: ["worker_done"],
+      monitor_timeout_seconds: 300,
+    },
+  });
+
+  assert.doesNotThrow(() =>
+    validateDebuggerTurnResultForTest(project, {
+      status: "continue_monitoring",
+      use_passed: true,
+      summary: "The GPU md run is still active and progressing, so the debugger should keep monitoring until AL phases begin.",
+      report_path: "/tmp/debugger-report.md",
+      restart_performed: false,
+      restart_result: "already_running",
+      monitor_result: "still_running",
+      evidence_sufficient: false,
+      monitoring_evidence:
+        "Confirmed active GPU md process, growing remote outputs, and healthy status/diagnose, but the run has not yet reached AL selection or continuation phases.",
+      observed_caveat: "GPU memory headroom is extremely tight while detached md is still progressing",
+      issues: [
+        "Detached md observability is weak while the run is still in progress.",
+        "GPU memory headroom is extremely tight during the current md phase.",
+      ],
+      enhancement_targets: [
+        "Expose md branch completion counts in status/diagnose.",
+        "Escalate GPU memory pressure before the run reaches failure territory.",
+      ],
+    }),
+  );
+});
+
+test("debugger validation rejects continue_monitoring with terminal block semantics", () => {
+  const project = makeProjectConfig({
+    commands: {
+      setup: [],
+      dry_test: ["npm test"],
+      restart: ["./restart.sh"],
+      use: ["./run-real.sh"],
+      monitor: ["tail -f progress.log"],
+      monitor_until: ["worker_done"],
+      monitor_timeout_seconds: 300,
+    },
+  });
+
+  assert.throws(
+    () =>
+      validateDebuggerTurnResultForTest(project, {
+        status: "continue_monitoring",
+        use_passed: true,
+        summary: "The run is still live.",
+        report_path: "/tmp/debugger-report.md",
+        restart_performed: false,
+        restart_result: "already_running",
+        monitor_result: "process_ended",
+        evidence_sufficient: true,
+        monitoring_evidence: "Only partial evidence so far.",
+        issues: [],
+        enhancement_targets: [],
+        blocking_reason: "Should not be terminal",
+      }),
+    /still_running|evidence_sufficient=false|blocking_reason/,
+  );
+});
+
+test("controller keeps debugger on baton while live monitoring is still in progress", () => {
+  const project = makeProjectConfig();
+
+  assert.equal(
+    shouldKeepCurrentRoleForTest(project, "debugger", {
+      status: "continue_monitoring",
+      summary: "Still monitoring",
+      use_passed: true,
+      restart_performed: false,
+      restart_result: "already_running",
+      monitor_result: "still_running",
+      evidence_sufficient: false,
+      monitoring_evidence: "Live run still progressing",
+      issues: [],
+      enhancement_targets: [],
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldKeepCurrentRoleForTest(project, "debugger", {
+      status: "needs_fix",
+      summary: "Found a real caveat",
+      use_passed: false,
+      restart_performed: false,
+      restart_result: "already_running",
+      monitor_result: "caveat_observed",
+      evidence_sufficient: true,
+      monitoring_evidence: "Warm-start caveat reproduced",
+      observed_caveat: "warm-start still resets optimizer state",
+      issues: ["Warm-start semantics are wrong"],
+      enhancement_targets: ["Preserve optimizer state"],
+    }),
+    false,
   );
 });
 
