@@ -48,6 +48,7 @@ interface WatchRolePanel {
   threadId: string;
   personaSummary: string;
   latestReasoning?: string;
+  reasoningTrail: string[];
   latestLabel: string;
   artifactName: string;
   commitSha: string;
@@ -377,6 +378,7 @@ export function buildWatchModel(snapshot: MonitorSnapshot, spinnerIndex: number)
       snapshot.roleAPreview,
       snapshot.roleA,
       latestReasoningForRole(snapshot.events, snapshot.roleA),
+      reasoningTrailForRole(snapshot.events, snapshot.roleA),
     ),
     roleB: buildRolePanel(
       snapshot.project,
@@ -385,6 +387,7 @@ export function buildWatchModel(snapshot: MonitorSnapshot, spinnerIndex: number)
       snapshot.roleBPreview,
       snapshot.roleB,
       latestReasoningForRole(snapshot.events, snapshot.roleB),
+      reasoningTrailForRole(snapshot.events, snapshot.roleB),
     ),
   };
 }
@@ -633,6 +636,11 @@ function renderRolePanel(panel: WatchRolePanel): string {
     `${dim("artifact")} ${escapeTags(panel.artifactName)}`,
     `${dim("commit")} ${escapeTags(panel.commitSha)}`,
     "",
+    `{bold}Reasoning Stream{/bold}`,
+    ...(panel.reasoningTrail.length > 0
+      ? panel.reasoningTrail.map((line) => escapeTags(line))
+      : ["{gray-fg}(no reasoning snapshots yet){/gray-fg}"]),
+    "",
     `{bold}Summary{/bold}`,
     escapeTags(panel.summary),
     "",
@@ -716,7 +724,7 @@ function buildTimeline(runtime: RuntimeState, activeRole: RoleKind | "none"): Wa
 }
 
 function buildFeed(events: WatchEventRecord[]): WatchFeedItem[] {
-  const selected = [...events].slice(-80).reverse();
+  const selected = [...events].reverse();
   if (selected.length === 0) {
     return [
       {
@@ -780,6 +788,7 @@ function buildRolePanel(
   preview: string[],
   role: RoleKind,
   latestReasoning?: string,
+  reasoningTrail: string[] = [],
 ): WatchRolePanel {
   const artifactName = record?.artifactPath ? path.basename(record.artifactPath) : "none";
   const commitSha = record?.commitSha ? record.commitSha.slice(0, 12) : runtime.loop.lastCommitSha?.slice(0, 12) ?? "none";
@@ -798,6 +807,7 @@ function buildRolePanel(
     threadId,
     personaSummary: summarizeRolePersona(project, role),
     latestReasoning,
+    reasoningTrail,
     latestLabel,
     artifactName,
     commitSha,
@@ -811,6 +821,11 @@ function buildRolePanel(
       `${dim("latest")} ${escapeTags(latestLabel)}`,
       `${dim("artifact")} ${escapeTags(artifactName)}`,
       `${dim("commit")} ${escapeTags(commitSha)}`,
+      "",
+      `{bold}Reasoning stream{/bold}`,
+      ...(reasoningTrail.length > 0
+        ? reasoningTrail.map((line) => escapeTags(line))
+        : ["{gray-fg}(no reasoning snapshots yet){/gray-fg}"]),
       "",
       `{bold}Summary{/bold}`,
       escapeTags(summary),
@@ -867,6 +882,18 @@ function latestReasoningForRole(events: WatchEventRecord[], role: RoleKind): str
     }
   }
   return undefined;
+}
+
+function reasoningTrailForRole(events: WatchEventRecord[], role: RoleKind): string[] {
+  return events
+    .filter((event) => event.role === role && (event.reasoning || event.kind === "reasoning_snapshot"))
+    .map((event) => {
+      if (event.reasoning) {
+        const blocker = event.reasoning.blocker ? ` | blocker: ${event.reasoning.blocker}` : "";
+        return `${event.at.slice(11, 19)} | ${event.reasoning.intent} | ${event.reasoning.current_step} | ${event.reasoning.finding_or_risk} | next: ${event.reasoning.next_action}${blocker}`;
+      }
+      return `${event.at.slice(11, 19)} | ${event.message}`;
+    });
 }
 
 function eventHeadline(event: WatchEventRecord): string {

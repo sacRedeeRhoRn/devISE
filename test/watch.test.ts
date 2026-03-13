@@ -186,6 +186,20 @@ test("buildWatchModel prioritizes live feed, timeline, and active role snapshots
             next_action: "re-run the parity check",
           },
         },
+        {
+          version: 1,
+          at: "2026-03-13T02:07:00.000Z",
+          kind: "reasoning_snapshot",
+          role: "scientist",
+          iteration: 3,
+          message: "Scientist reasoning: verify closure residuals | residual drift remains | next: inspect the new closure trace",
+          reasoning: {
+            intent: "verify closure residuals",
+            current_step: "inspect the new closure trace",
+            finding_or_risk: "residual drift remains",
+            next_action: "compare the new closure trace with the accepted baseline",
+          },
+        },
       ],
       roleARecord: runtime.history[0],
       roleBRecord: runtime.history[1],
@@ -198,10 +212,99 @@ test("buildWatchModel prioritizes live feed, timeline, and active role snapshots
   assert.equal(model.activeRole, "modeller");
   assert.equal(model.projectDomain, "Quantum Transport");
   assert.equal(model.timeline.length, 3);
-  assert.equal(model.feed.length, 2);
+  assert.equal(model.feed.length, 3);
   assert.match(model.feed[0]?.detail ?? "", /Reasoning snapshot/i);
   assert.equal(model.roleA.artifactName, "scientist-assessment.md");
   assert.equal(model.roleB.artifactName, "modeller-design-report.md");
   assert.match(model.roleA.personaSummary, /Landauer|Anderson|Datta/);
-  assert.match(model.roleA.latestReasoning ?? "", /inspect the revised closure/);
+  assert.match(model.roleA.latestReasoning ?? "", /inspect the new closure trace/);
+  assert.equal(model.roleA.reasoningTrail.length, 2);
+  assert.match(model.roleA.detail, /inspect the revised closure/);
+  assert.match(model.roleA.detail, /inspect the new closure trace/);
+});
+
+test("buildWatchModel keeps full feed history instead of truncating older reasoning snapshots", () => {
+  const baseProject: ProjectConfig = {
+    version: 3,
+    kind: "managed_project",
+    project: {
+      id: "demo",
+      root: "/tmp/demo",
+    },
+    loop_kind: "developer-debugger",
+    goal: "Stabilize the patch loop",
+    acceptance: ["Debugger accepts the result"],
+    commands: {
+      dry_test: ["npm test"],
+      use: ["npm run serve"],
+    },
+    git: {
+      role_branch: "devise/demo/developer",
+      commit_message_template: "role(demo): developer iteration {{iteration}}",
+    },
+    loop: {
+      max_iterations: null,
+      stagnation_limit: null,
+    },
+    roles: {
+      developer: {
+        description: "Patch code.",
+      },
+      debugger: {
+        description: "Verify runtime behavior.",
+      },
+    },
+  };
+
+  const baseRuntime: RuntimeState = {
+    version: 3,
+    projectId: "demo",
+    projectRoot: "/tmp/demo",
+    roles: {},
+    launch: {},
+    loop: {
+      status: "running",
+      iteration: 41,
+      task: "Stabilize the patch loop",
+      startRole: "developer",
+      lastRole: "developer",
+    },
+    history: [],
+  };
+
+  const events: WatchEventRecord[] = Array.from({ length: 95 }, (_, index) => ({
+    version: 1,
+    at: `2026-03-13T02:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
+    kind: "reasoning_snapshot",
+    role: "developer",
+    iteration: index + 1,
+    message: `Developer reasoning snapshot ${index + 1}`,
+    reasoning: {
+      intent: `intent ${index + 1}`,
+      current_step: `step ${index + 1}`,
+      finding_or_risk: `risk ${index + 1}`,
+      next_action: `next ${index + 1}`,
+    },
+  }));
+
+  const model = buildWatchModel(
+    {
+      projectId: "demo",
+      projectRoot: "/tmp/demo",
+      project: baseProject,
+      runtime: baseRuntime,
+      roleA: "developer",
+      roleB: "debugger",
+      controllerAlive: true,
+      events,
+      roleAPreview: [],
+      roleBPreview: [],
+    },
+    0,
+  );
+
+  assert.equal(model.feed.length, 95);
+  assert.equal(model.roleA.reasoningTrail.length, 95);
+  assert.match(model.roleA.detail, /step 1/);
+  assert.match(model.roleA.detail, /step 95/);
 });
