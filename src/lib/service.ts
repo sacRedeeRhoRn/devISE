@@ -233,11 +233,12 @@ export class RoleService {
     const runtime = await loadRuntimeState(projectRoot);
     ensureRoleAllowedForProject(project, input.role);
     const client = this.newClient();
+    const mode = resolveAssignmentMode(input);
 
     try {
       const developerInstructions = await this.roleInstructions(project, input.role);
       let thread: ThreadLike;
-      if (input.mode === "new") {
+      if (mode === "new") {
         await client.connect();
         thread = await client.startThread({
           cwd: project.project.root,
@@ -248,7 +249,7 @@ export class RoleService {
           experimentalRawEvents: false,
           persistExtendedHistory: true,
         });
-      } else if (input.mode === "current") {
+      } else if (mode === "current") {
         const currentThreadId =
           input.currentThreadId ?? (await this.resolveCurrentSession(projectRoot))?.threadId;
         if (!currentThreadId) {
@@ -285,12 +286,12 @@ export class RoleService {
         threadId: thread.id,
         threadName,
         sourceMode:
-          input.mode === "new"
+          mode === "new"
             ? "new"
-            : input.mode === "current"
+            : mode === "current"
               ? "current"
               : "fork",
-        sourceThreadId: input.mode === "old" ? input.threadId : undefined,
+        sourceThreadId: mode === "old" ? input.threadId : undefined,
         assignedAt: new Date().toISOString(),
       };
       await saveRuntimeState(runtime);
@@ -668,6 +669,24 @@ function isStale(lastEventAt?: string): boolean {
 
 function isRoleKind(value: string): value is RoleKind {
   return ROLE_KINDS.includes(value as RoleKind);
+}
+
+function resolveAssignmentMode(
+  input: AssignmentInput,
+): "new" | "current" | "old" {
+  if (input.mode) {
+    return input.mode;
+  }
+
+  if (input.threadId) {
+    return "old";
+  }
+
+  if (input.currentThreadId) {
+    return "current";
+  }
+
+  return "new";
 }
 
 function truncate(input: string, maxLength: number): string {

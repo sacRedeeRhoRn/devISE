@@ -238,7 +238,7 @@ function registerWorkflowNamespace(
       inputSchema: {
         projectRoot: z.string(),
         role: z.enum(ROLE_KINDS),
-        mode: z.enum(["new", "current", "old"]),
+        mode: z.enum(["new", "current", "old"]).optional(),
         threadId: z.string().optional(),
         currentThreadId: z.string().optional(),
       },

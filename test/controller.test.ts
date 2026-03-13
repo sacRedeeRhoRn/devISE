@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   connectivityIssueFromTextsForTest,
+  isMissingRolloutErrorForTest,
   observableTurnEventsForTest,
   roleOutputSchemasForTest,
 } from "../src/lib/controller.js";
@@ -152,4 +153,19 @@ test("connectivity issue detection recognizes transient outage signals but ignor
 
   assert.match(transient ?? "", /Temporary failure in name resolution/);
   assert.equal(normal, undefined);
+});
+
+test("missing rollout detection recognizes stale assigned sessions", () => {
+  assert.equal(
+    isMissingRolloutErrorForTest(
+      new Error("no rollout found for thread id 019ce3b1-bb5b-7c51-a428-9097cc04a82b (code -32600)"),
+    ),
+    true,
+  );
+  assert.equal(
+    isMissingRolloutErrorForTest(
+      new Error("Acceptance criteria are not met yet"),
+    ),
+    false,
+  );
 });

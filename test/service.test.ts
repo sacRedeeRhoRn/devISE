@@ -263,6 +263,33 @@ test("assignRole can create a fresh managed role session", async () => {
   assert.equal(runtime.roles.developer?.threadId, "fresh-thread");
 });
 
+test("assignRole defaults to a fresh managed role session when mode is omitted", async () => {
+  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-service-assign-default-"));
+  await createProjectFiles({
+    projectRoot,
+    loopKind: "developer-debugger",
+    goal: "Default to fresh managed assignment",
+    acceptance: ["roles default to new managed sessions"],
+    dryTestCommands: ["npm test"],
+    useCommands: ["npm start"],
+  });
+
+  const client = new FakeServiceClient();
+  const service = makeService({
+    createClient: () => client as never,
+  });
+
+  const runtime = await service.assignRole({
+    projectRoot,
+    role: "debugger",
+  });
+
+  assert.equal(runtime.roles.debugger?.sourceMode, "new");
+  assert.equal(runtime.roles.debugger?.threadId, "fresh-thread");
+  assert.equal(client.resumeParams, undefined);
+  assert.equal(client.startThreadParams?.cwd, projectRoot);
+});
+
 test("portfolio defaults are copied into new child projects and moveProject only changes registry linkage", async () => {
   const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "devise-home-"));
   const originalHome = process.env.HOME;

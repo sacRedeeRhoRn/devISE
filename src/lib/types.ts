@@ -274,7 +274,7 @@ export interface SessionSummary {
 export interface AssignmentInput {
   projectRoot: string;
   role: RoleKind;
-  mode: "new" | "current" | "old";
+  mode?: "new" | "current" | "old";
   threadId?: string;
   currentThreadId?: string;
 }

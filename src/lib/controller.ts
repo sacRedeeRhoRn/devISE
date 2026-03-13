@@ -267,39 +267,7 @@ async function hydrateRoleThreads(
   runtime: RuntimeState,
 ): Promise<void> {
   for (const role of activeRolesForProject(project)) {
-    const assigned = runtime.roles[role];
-    if (assigned) {
-      await client.resumeThread({
-        threadId: assigned.threadId,
-        cwd: project.project.root,
-        approvalPolicy: "never",
-        sandbox: "danger-full-access",
-        developerInstructions: await loadRoleInstructions(repoRoot, project, role),
-        persistExtendedHistory: true,
-      });
-      await client.setThreadName(assigned.threadId, assigned.threadName);
-      continue;
-    }
-
-    const threadName = managedThreadName(project.project.id, role);
-    const thread = await client.startThread({
-      cwd: project.project.root,
-      approvalPolicy: "never",
-      sandbox: "danger-full-access",
-      developerInstructions: await loadRoleInstructions(repoRoot, project, role),
-      personality: "pragmatic",
-      experimentalRawEvents: false,
-      persistExtendedHistory: true,
-    });
-    await client.setThreadName(thread.id, threadName);
-    runtime.roles[role] = {
-      role,
-      threadId: thread.id,
-      threadName,
-      sourceMode: "new",
-      assignedAt: new Date().toISOString(),
-    };
-    await saveRuntimeState(runtime);
+    await ensureRoleThreadReady(repoRoot, client, project, runtime, role);
   }
 }
 
@@ -312,7 +280,7 @@ async function runRoleTurn(
   iteration: number,
 ): Promise<ControllerTurnResult> {
   ensureRoleAssigned(runtime, role);
-  const roleSession = runtime.roles[role]!;
+  const roleSession = await ensureRoleThreadReady(repoRoot, client, project, runtime, role);
   const artifactDir = path.join(
     await resolveArtifactsDir(project.project.root),
     `iter-${String(iteration).padStart(3, "0")}`,
@@ -324,14 +292,6 @@ async function runRoleTurn(
       ? runtime.loop.lastReportPath
       : undefined;
 
-  await client.resumeThread({
-    threadId: roleSession.threadId,
-    cwd: project.project.root,
-    approvalPolicy: "never",
-    sandbox: "danger-full-access",
-    developerInstructions: await loadRoleInstructions(repoRoot, project, role),
-    persistExtendedHistory: true,
-  });
   const priorThread = await client.readThread(roleSession.threadId, true);
   const priorTurnCount = priorThread.turns.length;
 
@@ -420,6 +380,64 @@ async function runRoleTurn(
   }
   await appendControllerLog(project.project.root, role, iteration, parsed);
   return parsed;
+}
+
+async function ensureRoleThreadReady(
+  repoRoot: string,
+  client: CodexAppServerClient,
+  project: ProjectConfig,
+  runtime: RuntimeState,
+  role: RoleKind,
+) {
+  const developerInstructions = await loadRoleInstructions(repoRoot, project, role);
+  const assigned = runtime.roles[role];
+  if (assigned) {
+    try {
+      await client.resumeThread({
+        threadId: assigned.threadId,
+        cwd: project.project.root,
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+        developerInstructions,
+        persistExtendedHistory: true,
+      });
+      await client.setThreadName(assigned.threadId, assigned.threadName);
+      return assigned;
+    } catch (error) {
+      if (!isMissingRolloutError(error)) {
+        throw error;
+      }
+
+      await appendWatchEvent(project.project.root, {
+        kind: "commentary",
+        role,
+        status: runtime.loop.status,
+        threadId: assigned.threadId,
+        message: `${capitalizeRole(role)} assigned thread was no longer live. Creating a fresh managed session automatically.`,
+      });
+    }
+  }
+
+  const threadName = managedThreadName(project.project.id, role);
+  const thread = await client.startThread({
+    cwd: project.project.root,
+    approvalPolicy: "never",
+    sandbox: "danger-full-access",
+    developerInstructions,
+    personality: "pragmatic",
+    experimentalRawEvents: false,
+    persistExtendedHistory: true,
+  });
+  await client.setThreadName(thread.id, threadName);
+  runtime.roles[role] = {
+    role,
+    threadId: thread.id,
+    threadName,
+    sourceMode: "new",
+    assignedAt: new Date().toISOString(),
+  };
+  await saveRuntimeState(runtime);
+  return runtime.roles[role]!;
 }
 
 async function runRoleTurnWithConnectivityGrace(
@@ -1064,6 +1082,17 @@ function connectivityIssueFromTexts(values: Array<string | undefined>): string |
 }
 
 export const connectivityIssueFromTextsForTest = connectivityIssueFromTexts;
+
+function isMissingRolloutError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /no rollout found for thread id/i.test(message) ||
+    /thread id .* not found/i.test(message) ||
+    /thread .* not found/i.test(message)
+  );
+}
+
+export const isMissingRolloutErrorForTest = isMissingRolloutError;
 
 function isBuilderRole(project: ProjectConfig, role: RoleKind): boolean {
   return builderRoleForLoopKind(project.loop_kind) === role;
