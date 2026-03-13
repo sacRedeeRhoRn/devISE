@@ -316,6 +316,44 @@ test("debugger validation accepts restart commands that report an already runnin
   );
 });
 
+test("debugger validation accepts restart commands that fail but still yield actionable evidence", () => {
+  const project = makeProjectConfig({
+    commands: {
+      setup: [],
+      dry_test: ["npm test"],
+      restart: ["./restart.sh"],
+      use: ["./run-real.sh"],
+      monitor: ["tail -f progress.log"],
+      monitor_until: ["worker_done"],
+      monitor_timeout_seconds: 300,
+    },
+  });
+
+  assert.doesNotThrow(() =>
+    validateDebuggerTurnResultForTest(project, {
+      status: "needs_fix",
+      use_passed: true,
+      summary: "The clean restart path failed, but the live use flow still ran and exposed an early benchmark-failure caveat.",
+      report_path: "/tmp/debugger-report.md",
+      restart_performed: false,
+      restart_result: "failed",
+      monitor_result: "caveat_observed",
+      evidence_sufficient: true,
+      monitoring_evidence:
+        "The restart command failed during remote bootstrap, but the benchmark still launched and produced enough overlap evidence to prove the current run is out of tolerance.",
+      observed_caveat: "benchmark overlap already proves failure while the managed benchmark path keeps running",
+      issues: [
+        "The configured clean restart path still fails during remote bootstrap.",
+        "The live benchmark does not terminate promptly after sufficient failed-overlap evidence appears.",
+      ],
+      enhancement_targets: [
+        "Fix the remote bootstrap path used by the restart contract.",
+        "Emit partial comparison and final summary artifacts immediately when failed overlap is already sufficient.",
+      ],
+    }),
+  );
+});
+
 test("debugger validation accepts continue_monitoring while a live run is still progressing", () => {
   const project = makeProjectConfig({
     commands: {
@@ -384,6 +422,39 @@ test("debugger validation rejects continue_monitoring with terminal block semant
         blocking_reason: "Should not be terminal",
       }),
     /still_running|evidence_sufficient=false|blocking_reason/,
+  );
+});
+
+test("debugger validation rejects restart_result=failed without concrete issues", () => {
+  const project = makeProjectConfig({
+    commands: {
+      setup: [],
+      dry_test: ["npm test"],
+      restart: ["./restart.sh"],
+      use: ["./run-real.sh"],
+      monitor: ["tail -f progress.log"],
+      monitor_until: ["worker_done"],
+      monitor_timeout_seconds: 300,
+    },
+  });
+
+  assert.throws(
+    () =>
+      validateDebuggerTurnResultForTest(project, {
+        status: "needs_fix",
+        use_passed: true,
+        summary: "Restart failed but no concrete issue was recorded.",
+        report_path: "/tmp/debugger-report.md",
+        restart_performed: false,
+        restart_result: "failed",
+        monitor_result: "caveat_observed",
+        evidence_sufficient: true,
+        monitoring_evidence: "Some evidence exists.",
+        observed_caveat: "restart path failed",
+        issues: [],
+        enhancement_targets: ["Fix the restart path"],
+      }),
+    /restart_result=failed without concrete issues/,
   );
 });
 

@@ -895,11 +895,30 @@ function validateDebuggerTurnResult(project: ProjectConfig, result: ControllerTu
     (project.commands.monitor?.length ?? 0) > 0 ||
     (project.commands.monitor_until?.length ?? 0) > 0;
   const continueMonitoring = result.status === "continue_monitoring";
+  const restartFailureExplained =
+    result.restart_result === "failed" &&
+    result.restart_performed !== true &&
+    (result.status === "blocked"
+      ? Boolean(result.blocking_reason?.trim())
+      : (result.issues?.length ?? 0) > 0);
 
   const restartHandled =
     result.restart_result === "performed" ||
     result.restart_result === "already_running" ||
+    restartFailureExplained ||
     result.restart_performed === true;
+
+  if (result.restart_result === "failed" && result.restart_performed === true) {
+    throw new Error("Debugger turn cannot report restart_result=failed together with restart_performed=true");
+  }
+
+  if (result.restart_result === "failed" && result.status === "goal_met") {
+    throw new Error("Debugger turn cannot report goal_met when the configured restart contract failed");
+  }
+
+  if (result.restart_result === "failed" && result.status !== "blocked" && (result.issues?.length ?? 0) === 0) {
+    throw new Error("Debugger turn reported restart_result=failed without concrete issues");
+  }
 
   if (restartConfigured && result.status !== "blocked" && !restartHandled) {
     throw new Error("Debugger turn did not confirm handling the configured clean restart commands");
@@ -922,7 +941,6 @@ function validateDebuggerTurnResult(project: ProjectConfig, result: ControllerTu
   if (result.restart_result === "already_running" && result.restart_performed === true) {
     throw new Error("Debugger turn cannot report already_running together with restart_performed=true");
   }
-
   if (monitoringConfigured && result.monitor_result === "not_configured") {
     throw new Error("Debugger turn reported monitor_result=not_configured despite monitoring requirements");
   }

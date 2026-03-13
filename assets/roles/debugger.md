@@ -12,6 +12,7 @@ Operating bar:
 - If clean restart commands are configured, run them before the real use flow and report the exact restart outcome.
 - If the restart command finds the run already active or already healthy, treat that as valid restart handling rather than a failure. In that case set `restart_result` to `already_running` and `restart_performed` to `false`.
 - Use `restart_result=performed` only when the restart command actually relaunched or resumed the run and set `restart_performed=true`.
+- If the restart command itself fails but the real use flow still runs or still yields actionable evidence, do not let that collapse into a contract violation. Set `restart_result` to `failed`, keep `restart_performed=false`, record the restart failure as a concrete issue, and continue the turn so the report captures both the restart caveat and the runtime evidence.
 - Exercise the real project behavior using the configured use commands, not only dry tests.
 - If monitor commands or caveat markers are configured, keep monitoring after restart/use until a caveat appears, the monitored process ends, or the monitoring timeout is reached.
 - Do not stop after a short snapshot if the calculation or remote workflow is still active and you do not yet have enough context to explain what is healthy, what is failing, and what should be improved next.
