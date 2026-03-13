@@ -65,8 +65,14 @@ const ROLE_OUTPUT_SCHEMAS: Record<RoleKind, Record<string, unknown>> = {
       type: "string",
       enum: ["not_configured", "caveat_observed", "process_ended", "timeout_reached"],
     },
+    evidence_sufficient: { type: "boolean" },
+    monitoring_evidence: { type: "string" },
     observed_caveat: nullableStringSchema(),
     issues: {
+      type: "array",
+      items: { type: "string" },
+    },
+    enhancement_targets: {
       type: "array",
       items: { type: "string" },
     },
@@ -352,7 +358,12 @@ async function runRoleTurn(
     throw new Error(`No final agent message found for ${role}`);
   }
 
-  const parsed = parseControllerTurnResult(agentMessage.text);
+  const parsed = await parseOrRecoverControllerTurnResult(
+    project,
+    role,
+    lastTurn.items,
+    artifactPath,
+  );
   applyDefaultArtifactPath(role, parsed, artifactPath);
   if (isBuilderRole(project, role)) {
     parsed.commit_sha ??= await readHeadSha(project.project.root);
@@ -564,7 +575,7 @@ ${counterpartSummary}
 Required artifact path: ${artifactPath}
 
 During the turn, emit brief progress updates before or after major phases so the live monitor can track what you are doing.
-Your final assistant message must be JSON only.
+Do not answer the human directly with markdown status notes or prose summaries. Put rich narrative into the artifact file, then end with the required JSON object only.
 `;
 }
 
@@ -875,14 +886,32 @@ function validateDebuggerTurnResult(project: ProjectConfig, result: ControllerTu
     throw new Error("Debugger turn reported monitor_result=not_configured despite monitoring requirements");
   }
 
+  if (monitoringConfigured && result.status !== "blocked" && result.evidence_sufficient !== true) {
+    throw new Error("Debugger turn finished without enough monitoring evidence");
+  }
+
+  if (monitoringConfigured && result.status !== "blocked" && !result.monitoring_evidence?.trim()) {
+    throw new Error("Debugger turn finished without monitoring_evidence");
+  }
+
   if (result.monitor_result === "caveat_observed" && !result.observed_caveat) {
     throw new Error("Debugger turn reported caveat_observed without observed_caveat");
+  }
+
+  if (result.status === "needs_fix" && (result.issues?.length ?? 0) === 0) {
+    throw new Error("Debugger turn reported needs_fix without concrete issues");
+  }
+
+  if (result.status === "needs_fix" && (result.enhancement_targets?.length ?? 0) === 0) {
+    throw new Error("Debugger turn reported needs_fix without enhancement_targets");
   }
 
   if (result.status === "goal_met" && result.monitor_result === "caveat_observed") {
     throw new Error("Debugger turn cannot report goal_met when a monitoring caveat was observed");
   }
 }
+
+export const validateDebuggerTurnResultForTest = validateDebuggerTurnResult;
 
 function validateScientistTurnResult(result: ControllerTurnResult): void {
   if (result.status === "goal_met" && result.assessment_passed !== true) {
@@ -925,6 +954,137 @@ function parseControllerTurnResult(text: string): ControllerTurnResult {
 
   const jsonText = trimmed.slice(start, end + 1);
   return JSON.parse(jsonText) as ControllerTurnResult;
+}
+
+async function parseOrRecoverControllerTurnResult(
+  project: ProjectConfig,
+  role: RoleKind,
+  items: ThreadItemLike[],
+  artifactPath: string,
+): Promise<ControllerTurnResult> {
+  const agentMessages = [...items]
+    .reverse()
+    .map((item) => ({ item, text: extractItemText(item) }))
+    .filter(
+      (entry): entry is { item: ThreadItemLike; text: string } =>
+        entry.item.type === "agentMessage" && entry.text.trim().length > 0,
+    );
+
+  if (agentMessages.length === 0) {
+    throw new Error(`No final agent message found for ${role}`);
+  }
+  const latestAgentMessage = agentMessages[0]!;
+
+  let lastParseError: unknown;
+  for (const entry of agentMessages) {
+    try {
+      return parseControllerTurnResult(entry.text);
+    } catch (error) {
+      lastParseError = error;
+    }
+  }
+
+  return recoverInvalidTurnResult(
+    project,
+    role,
+    latestAgentMessage.text,
+    artifactPath,
+    lastParseError,
+  );
+}
+
+async function recoverInvalidTurnResult(
+  project: ProjectConfig,
+  role: RoleKind,
+  rawText: string,
+  artifactPath: string,
+  parseError: unknown,
+): Promise<ControllerTurnResult> {
+  const blockingReason =
+    parseError instanceof Error
+      ? parseError.message
+      : `Role output is not valid JSON: ${rawText}`;
+  const summary =
+    `${capitalizeRole(role)} left the managed JSON contract. ` +
+    `The raw final reply was saved to the iteration artifact and the turn was treated as blocked instead of failing the loop.`;
+  const artifactBody = renderInvalidTurnArtifact(role, blockingReason, rawText);
+  await ensureDir(path.dirname(artifactPath));
+  await fs.writeFile(artifactPath, artifactBody, "utf8");
+
+  switch (role) {
+    case "developer":
+      return {
+        status: "blocked",
+        dry_test_passed: false,
+        summary,
+        handoff_report_path: artifactPath,
+        blocking_reason: blockingReason,
+      };
+    case "debugger":
+      return {
+        status: "blocked",
+        use_passed: false,
+        summary,
+        report_path: artifactPath,
+        restart_performed: false,
+        monitor_result: debuggerMonitoringFallback(project),
+        evidence_sufficient: false,
+        monitoring_evidence: normalizeMessage(rawText),
+        observed_caveat: undefined,
+        issues: [blockingReason],
+        enhancement_targets: [],
+        blocking_reason: blockingReason,
+      };
+    case "scientist":
+      return {
+        status: "blocked",
+        assessment_passed: false,
+        summary,
+        assessment_report_path: artifactPath,
+        issues: [blockingReason],
+        enhancement_targets: [],
+        blocking_reason: blockingReason,
+      };
+    case "modeller":
+      return {
+        status: "blocked",
+        design_ready: false,
+        summary,
+        model_report_path: artifactPath,
+        blocking_reason: blockingReason,
+      };
+  }
+}
+
+export const recoverInvalidTurnResultForTest = recoverInvalidTurnResult;
+
+function debuggerMonitoringFallback(
+  project: ProjectConfig,
+): "not_configured" | "timeout_reached" {
+  const monitoringConfigured =
+    (project.commands.monitor?.length ?? 0) > 0 ||
+    (project.commands.monitor_until?.length ?? 0) > 0;
+  return monitoringConfigured ? "timeout_reached" : "not_configured";
+}
+
+function renderInvalidTurnArtifact(
+  role: RoleKind,
+  blockingReason: string,
+  rawText: string,
+): string {
+  const cleaned = rawText.trim() || "(empty response)";
+  return [
+    `# ${capitalizeRole(role)} Invalid Final Reply`,
+    "",
+    "The managed turn did not end with the required JSON object.",
+    "",
+    `Blocking reason: ${blockingReason}`,
+    "",
+    "Raw final reply:",
+    "",
+    cleaned,
+    "",
+  ].join("\n");
 }
 
 function artifactFileNameForRole(role: RoleKind): string {

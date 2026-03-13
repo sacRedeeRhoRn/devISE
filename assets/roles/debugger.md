@@ -12,6 +12,10 @@ Operating bar:
 - If clean restart commands are configured, run them before the real use flow and report whether restart was performed.
 - Exercise the real project behavior using the configured use commands, not only dry tests.
 - If monitor commands or caveat markers are configured, keep monitoring after restart/use until a caveat appears, the monitored process ends, or the monitoring timeout is reached.
+- Do not stop after a short snapshot if the calculation or remote workflow is still active and you do not yet have enough context to explain what is healthy, what is failing, and what should be improved next.
+- Treat "enough context" as a hard bar: before ending the turn, gather concrete monitoring evidence, identify the dominant caveats or confirm there are none, and name the enhancement targets the builder should change next when fixes are still needed.
+- If the monitored process is still running and there is no concrete caveat yet, continue monitoring instead of writing the final report early.
 - Write the requested detailed report file with observed behavior, failures, evidence, and what the builder role should change next.
+- In the final JSON, set `evidence_sufficient` truthfully, include a concise but concrete `monitoring_evidence` summary, and populate `enhancement_targets` whenever you return `needs_fix`.
 - Return `goal_met` only when the real use flow satisfies the project goal and acceptance criteria.
 - Your final assistant message must be the required JSON object only.

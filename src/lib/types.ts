@@ -342,6 +342,8 @@ export interface ControllerTurnResult {
   use_passed?: boolean;
   restart_performed?: boolean;
   monitor_result?: "not_configured" | "caveat_observed" | "process_ended" | "timeout_reached";
+  evidence_sufficient?: boolean;
+  monitoring_evidence?: string;
   observed_caveat?: string;
   design_ready?: boolean;
   assessment_passed?: boolean;
@@ -351,6 +353,7 @@ export interface ControllerTurnResult {
   model_report_path?: string;
   assessment_report_path?: string;
   issues?: string[];
+  enhancement_targets?: string[];
   blocking_reason?: string;
 }
 
