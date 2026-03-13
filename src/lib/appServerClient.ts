@@ -91,6 +91,14 @@ export interface ThreadLike {
   turns: ThreadTurnLike[];
 }
 
+export function isThreadNotMaterializedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /is not materialized yet/i.test(message) ||
+    /includeTurns is unavailable before first user message/i.test(message)
+  );
+}
+
 export class CodexAppServerClient extends EventEmitter {
   private child?: ChildProcessWithoutNullStreams;
   private nextId = 1;
@@ -262,6 +270,14 @@ export class CodexAppServerClient extends EventEmitter {
             return;
           }
         } catch (error) {
+          if (isThreadNotMaterializedError(error)) {
+            if (!settled) {
+              pollTimer = setTimeout(() => {
+                void pollThreadState();
+              }, 1000);
+            }
+            return;
+          }
           cleanup();
           reject(error instanceof Error ? error : new Error(String(error)));
           return;

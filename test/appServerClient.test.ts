@@ -142,6 +142,66 @@ test("waitForTurnCompletion polls thread state when notifications are missing", 
   }
 });
 
+test("waitForTurnCompletion tolerates a freshly started thread that is not materialized yet", async () => {
+  let readCount = 0;
+  const client = new CodexAppServerClient({
+    spawnImpl() {
+      return createFakeAppServerChild((request, child) => {
+        if (request.method === "turn/start") {
+          child.respond(request.id, { result: {} });
+          return true;
+        }
+
+        if (request.method === "thread/read") {
+          readCount += 1;
+          if (readCount === 1) {
+            child.respond(request.id, {
+              error: {
+                code: -32600,
+                message:
+                  "thread thread-1 is not materialized yet; includeTurns is unavailable before first user message",
+              },
+            });
+            return true;
+          }
+
+          child.respond(request.id, {
+            result: {
+              thread: {
+                id: "thread-1",
+                preview: "preview",
+                updatedAt: 0,
+                cwd: process.cwd(),
+                source: "cli",
+                name: null,
+                agentRole: null,
+                turns: [
+                  {
+                    id: "turn-1",
+                    status: "completed",
+                    items: [],
+                  },
+                ],
+              },
+            },
+          });
+          return true;
+        }
+
+        return false;
+      });
+    },
+  });
+
+  try {
+    await client.startTurn({ threadId: "thread-1", input: [] });
+    await client.waitForTurnCompletion("thread-1", 5000, 0);
+    assert.ok(readCount >= 2);
+  } finally {
+    await client.close();
+  }
+});
+
 test("waitForTurnCompletion supports an unbounded wait when timeout is omitted", async () => {
   const client = new CodexAppServerClient({
     spawnImpl() {

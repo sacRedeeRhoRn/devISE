@@ -1,7 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { CodexAppServerClient, type ThreadLike } from "./appServerClient.js";
+import {
+  CodexAppServerClient,
+  isThreadNotMaterializedError,
+  type ThreadLike,
+} from "./appServerClient.js";
 import { runLoop, managedThreadName, spawnLoopProcess } from "./controller.js";
 import { doctor as runDoctor, installAssets } from "./install.js";
 import { ensureDir } from "./fs.js";
@@ -464,7 +468,7 @@ export class RoleService {
       return;
     }
 
-    const priorThread = await client.readThread(threadId, true);
+    const priorThread = await this.readThreadWithTurnsFallback(client, threadId);
     const priorTurnCount = priorThread.turns.length;
     await client.startTurn({
       threadId,
@@ -480,6 +484,29 @@ export class RoleService {
       personality: "pragmatic",
     });
     await client.waitForTurnCompletion(threadId, undefined, priorTurnCount);
+  }
+
+  private async readThreadWithTurnsFallback(
+    client: CodexAppServerClient,
+    threadId: string,
+  ): Promise<ThreadLike> {
+    try {
+      const thread = await client.readThread(threadId, true);
+      return {
+        ...thread,
+        turns: Array.isArray(thread.turns) ? thread.turns : [],
+      };
+    } catch (error) {
+      if (!isThreadNotMaterializedError(error)) {
+        throw error;
+      }
+
+      const thread = await client.readThread(threadId, false);
+      return {
+        ...thread,
+        turns: Array.isArray(thread.turns) ? thread.turns : [],
+      };
+    }
   }
 }
 

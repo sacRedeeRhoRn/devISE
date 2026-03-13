@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 
 import {
   CodexAppServerClient,
+  isThreadNotMaterializedError,
   type ThreadItemLike,
   type ThreadLike,
   type ThreadTurnLike,
@@ -315,7 +316,7 @@ async function runRoleTurn(
   const artifactPath = path.join(artifactDir, artifactFileNameForRole(role));
   const counterpartArtifact = await resolveCounterpartArtifact(project, runtime, role);
 
-  const priorThread = await client.readThread(roleSession.threadId, true);
+  const priorThread = await readThreadWithTurnsFallback(client, roleSession.threadId);
   const priorTurnCount = priorThread.turns.length;
 
   const prompt = await buildRoleTurnPrompt(
@@ -674,7 +675,7 @@ async function readTerminalTurnSnapshot(
 ): Promise<ThreadLike> {
   let lastThread: ThreadLike | undefined;
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    const thread = await client.readThread(threadId, true);
+    const thread = await readThreadWithTurnsFallback(client, threadId);
     lastThread = thread;
     if (thread.turns.length > priorTurnCount) {
       const lastTurn = thread.turns.at(-1);
@@ -694,7 +695,7 @@ async function readTerminalTurnSnapshot(
     return lastThread;
   }
 
-  return client.readThread(threadId, true);
+  return readThreadWithTurnsFallback(client, threadId);
 }
 
 function startTurnActivityMonitor(
@@ -754,7 +755,7 @@ async function captureThreadObservableEvents(
 ): Promise<boolean> {
   let thread: ThreadLike;
   try {
-    thread = await client.readThread(threadId, true);
+    thread = await readThreadWithTurnsFallback(client, threadId);
   } catch {
     return false;
   }
@@ -786,6 +787,29 @@ async function captureThreadObservableEvents(
   }
 
   return terminal;
+}
+
+async function readThreadWithTurnsFallback(
+  client: CodexAppServerClient,
+  threadId: string,
+): Promise<ThreadLike> {
+  try {
+    const thread = await client.readThread(threadId, true);
+    return {
+      ...thread,
+      turns: Array.isArray(thread.turns) ? thread.turns : [],
+    };
+  } catch (error) {
+    if (!isThreadNotMaterializedError(error)) {
+      throw error;
+    }
+
+    const thread = await client.readThread(threadId, false);
+    return {
+      ...thread,
+      turns: Array.isArray(thread.turns) ? thread.turns : [],
+    };
+  }
 }
 
 function extractObservableTurnEvents(

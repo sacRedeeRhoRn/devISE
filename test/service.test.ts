@@ -263,6 +263,33 @@ test("assignRole can create a fresh managed role session", async () => {
   assert.equal(runtime.roles.developer?.threadId, "fresh-thread");
 });
 
+test("assignRole primes a fresh managed role session even before the thread is materialized", async () => {
+  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-service-assign-unmaterialized-"));
+  await createProjectFiles({
+    projectRoot,
+    loopKind: "developer-debugger",
+    goal: "Prime a fresh unmaterialized session",
+    acceptance: ["fresh sessions can be primed safely"],
+    dryTestCommands: ["npm test"],
+    useCommands: ["npm start"],
+  });
+
+  const client = new FakeServiceClient({ unmaterializedUntilFirstTurn: true });
+  const service = makeService({
+    createClient: () => client as never,
+  });
+
+  const runtime = await service.assignRole({
+    projectRoot,
+    role: "developer",
+    mode: "new",
+  });
+
+  assert.equal(runtime.roles.developer?.threadId, "fresh-thread");
+  assert.equal(client.turnInputs.length, 1);
+  assert.match(client.turnInputs[0] ?? "", /standing by/i);
+});
+
 test("assignRole defaults to a fresh managed role session when mode is omitted", async () => {
   const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "devise-service-assign-default-"));
   await createProjectFiles({
@@ -456,6 +483,13 @@ class FakeServiceClient extends EventEmitter {
   resumeParams?: Record<string, unknown>;
   startThreadParams?: Record<string, unknown>;
   turnInputs: string[] = [];
+  constructor(
+    private readonly options: {
+      unmaterializedUntilFirstTurn?: boolean;
+    } = {},
+  ) {
+    super();
+  }
   private readonly thread: ThreadLike = {
     id: "existing-thread",
     preview: "assigned thread",
@@ -492,6 +526,15 @@ class FakeServiceClient extends EventEmitter {
   }
 
   async readThread(_threadId: string, _includeTurns = true): Promise<ThreadLike> {
+    if (
+      this.options.unmaterializedUntilFirstTurn &&
+      _includeTurns &&
+      this.thread.turns.length === 0
+    ) {
+      throw new Error(
+        `thread ${this.thread.id} is not materialized yet; includeTurns is unavailable before first user message (code -32600)`,
+      );
+    }
     return this.thread;
   }
 
