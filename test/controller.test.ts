@@ -11,6 +11,7 @@ import {
   recoverInvalidTurnResultForTest,
   roleOutputSchemasForTest,
   shouldKeepCurrentRoleForTest,
+  shouldRetryRoleTurnOnContractDriftForTest,
   validateDebuggerTurnResultForTest,
 } from "../src/lib/controller.js";
 import type { ProjectConfig } from "../src/lib/types.js";
@@ -208,6 +209,64 @@ test("invalid final replies are recovered into blocked results with saved artifa
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
+});
+
+test("invalid JSON drift on a reused session triggers one fresh-session retry", () => {
+  assert.equal(
+    shouldRetryRoleTurnOnContractDriftForTest(
+      {
+        role: "debugger",
+        threadId: "thread-1",
+        threadName: "devISE:test:debugger",
+        sourceMode: "current",
+        assignedAt: new Date().toISOString(),
+      },
+      {
+        status: "blocked",
+        use_passed: false,
+        summary: "Debugger left the managed JSON contract.",
+        report_path: "/tmp/debugger-report.md",
+        restart_performed: false,
+        restart_result: "failed",
+        monitor_result: "timeout_reached",
+        evidence_sufficient: false,
+        monitoring_evidence: "I’m checking the managed devISE project status.",
+        observed_caveat: undefined,
+        issues: ["Role output is not valid JSON: I’m checking the managed devISE project status."],
+        enhancement_targets: [],
+        blocking_reason: "Role output is not valid JSON: I’m checking the managed devISE project status.",
+      },
+    ),
+    true,
+  );
+
+  assert.equal(
+    shouldRetryRoleTurnOnContractDriftForTest(
+      {
+        role: "debugger",
+        threadId: "thread-2",
+        threadName: "devISE:test:debugger",
+        sourceMode: "new",
+        assignedAt: new Date().toISOString(),
+      },
+      {
+        status: "blocked",
+        use_passed: false,
+        summary: "Debugger left the managed JSON contract.",
+        report_path: "/tmp/debugger-report.md",
+        restart_performed: false,
+        restart_result: "failed",
+        monitor_result: "timeout_reached",
+        evidence_sufficient: false,
+        monitoring_evidence: "I’m checking the managed devISE project status.",
+        observed_caveat: undefined,
+        issues: ["Role output is not valid JSON: I’m checking the managed devISE project status."],
+        enhancement_targets: [],
+        blocking_reason: "Role output is not valid JSON: I’m checking the managed devISE project status.",
+      },
+    ),
+    false,
+  );
 });
 
 test("debugger validation rejects shallow needs_fix results without monitoring evidence or targets", () => {

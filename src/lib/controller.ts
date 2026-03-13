@@ -35,6 +35,7 @@ import {
   type ProjectConfig,
   type ReasoningSnapshot,
   type RoleKind,
+  type RoleSession,
   type RuntimeState,
   type WatchEventRecord,
 } from "./types.js";
@@ -306,109 +307,131 @@ async function runRoleTurn(
   role: RoleKind,
   iteration: number,
 ): Promise<ControllerTurnResult> {
-  ensureRoleAssigned(runtime, role);
-  const roleSession = await ensureRoleThreadReady(repoRoot, client, project, runtime, role);
-  const artifactDir = path.join(
-    await resolveArtifactsDir(project.project.root),
-    `iter-${String(iteration).padStart(3, "0")}`,
-  );
-  await ensureDir(artifactDir);
-  const artifactPath = path.join(artifactDir, artifactFileNameForRole(role));
-  const counterpartArtifact = await resolveCounterpartArtifact(project, runtime, role);
-
-  const priorThread = await readThreadWithTurnsFallback(client, roleSession.threadId);
-  const priorTurnCount = priorThread.turns.length;
-
-  const prompt = await buildRoleTurnPrompt(
-    repoRoot,
-    project,
-    runtime,
-    role,
-    iteration,
-    artifactPath,
-    counterpartArtifact,
-  );
-
-  await client.startTurn({
-    threadId: roleSession.threadId,
-    input: [
-      {
-        type: "text",
-        text: prompt,
-        text_elements: [],
-      },
-    ],
-    cwd: project.project.root,
-    approvalPolicy: "never",
-    outputSchema: ROLE_OUTPUT_SCHEMAS[role],
-    personality: "pragmatic",
-  });
-  const activityMonitor = startTurnActivityMonitor(
-    client,
-    project.project.root,
-    roleSession.threadId,
-    role,
-    iteration,
-    priorTurnCount,
-  );
-  let thread: ThreadLike;
-  try {
-    await client.waitForTurnCompletion(roleSession.threadId, undefined, priorTurnCount);
-    thread = await readTerminalTurnSnapshot(client, roleSession.threadId, priorTurnCount);
-  } finally {
-    await activityMonitor.stop();
-  }
-  const lastTurn = thread.turns.at(-1);
-  if (!lastTurn) {
-    throw new Error(`No completed turn found for ${roleSession.threadId}`);
-  }
-
-  if (lastTurn.status !== "completed") {
-    throw new Error(
-      `Turn for ${role} did not complete successfully (status=${lastTurn.status})`,
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    ensureRoleAssigned(runtime, role);
+    const roleSession = await ensureRoleThreadReady(repoRoot, client, project, runtime, role);
+    const artifactDir = path.join(
+      await resolveArtifactsDir(project.project.root),
+      `iter-${String(iteration).padStart(3, "0")}`,
     );
-  }
+    await ensureDir(artifactDir);
+    const artifactPath = path.join(artifactDir, artifactFileNameForRole(role));
+    const counterpartArtifact = await resolveCounterpartArtifact(project, runtime, role);
 
-  const agentMessage = [...lastTurn.items]
-    .reverse()
-    .find((item) => item.type === "agentMessage" && item.text);
-  if (!agentMessage?.text) {
-    throw new Error(`No final agent message found for ${role}`);
-  }
+    const priorThread = await readThreadWithTurnsFallback(client, roleSession.threadId);
+    const priorTurnCount = priorThread.turns.length;
 
-  const parsed = await parseOrRecoverControllerTurnResult(
-    project,
-    role,
-    lastTurn.items,
-    artifactPath,
-  );
-  applyDefaultArtifactPath(role, parsed, artifactPath);
-  if (isBuilderRole(project, role)) {
-    parsed.commit_sha ??= await readHeadSha(project.project.root);
-  }
-  validateTurnResult(project, role, parsed);
-
-  const finalArtifactPath = artifactPathFromResult(parsed);
-  if (finalArtifactPath) {
-    await appendWatchEvent(project.project.root, {
-      kind: "artifact_written",
-      iteration,
+    const prompt = await buildRoleTurnPrompt(
+      repoRoot,
+      project,
+      runtime,
       role,
-      message: `${capitalizeRole(role)} updated ${path.basename(finalArtifactPath)}`,
-      artifactPath: finalArtifactPath,
-    });
-  }
-  if (parsed.commit_sha) {
-    await appendWatchEvent(project.project.root, {
-      kind: "commit_recorded",
       iteration,
-      role,
-      message: `${capitalizeRole(role)} recorded commit ${parsed.commit_sha.slice(0, 12)}`,
-      commitSha: parsed.commit_sha,
+      artifactPath,
+      counterpartArtifact,
+    );
+
+    await client.startTurn({
+      threadId: roleSession.threadId,
+      input: [
+        {
+          type: "text",
+          text: prompt,
+          text_elements: [],
+        },
+      ],
+      cwd: project.project.root,
+      approvalPolicy: "never",
+      outputSchema: ROLE_OUTPUT_SCHEMAS[role],
+      personality: "pragmatic",
     });
+    const activityMonitor = startTurnActivityMonitor(
+      client,
+      project.project.root,
+      roleSession.threadId,
+      role,
+      iteration,
+      priorTurnCount,
+    );
+    let thread: ThreadLike;
+    try {
+      await client.waitForTurnCompletion(roleSession.threadId, undefined, priorTurnCount);
+      thread = await readTerminalTurnSnapshot(client, roleSession.threadId, priorTurnCount);
+    } finally {
+      await activityMonitor.stop();
+    }
+    const lastTurn = thread.turns.at(-1);
+    if (!lastTurn) {
+      throw new Error(`No completed turn found for ${roleSession.threadId}`);
+    }
+
+    if (lastTurn.status !== "completed") {
+      throw new Error(
+        `Turn for ${role} did not complete successfully (status=${lastTurn.status})`,
+      );
+    }
+
+    const agentMessage = [...lastTurn.items]
+      .reverse()
+      .find((item) => item.type === "agentMessage" && item.text);
+    if (!agentMessage?.text) {
+      throw new Error(`No final agent message found for ${role}`);
+    }
+
+    const parsed = await parseOrRecoverControllerTurnResult(
+      project,
+      role,
+      lastTurn.items,
+      artifactPath,
+    );
+    applyDefaultArtifactPath(role, parsed, artifactPath);
+
+    if (shouldRetryRoleTurnOnContractDrift(roleSession, parsed) && attempt === 0) {
+      delete runtime.roles[role];
+      await saveRuntimeState(runtime);
+      await appendWatchEvent(project.project.root, {
+        kind: "commentary",
+        iteration,
+        role,
+        status: "running",
+        threadId: roleSession.threadId,
+        artifactPath,
+        message:
+          `${capitalizeRole(role)} left the managed JSON contract on a reusable session. ` +
+          `devISE is replacing that session with a fresh managed thread and retrying the same iteration once.`,
+      });
+      continue;
+    }
+
+    if (isBuilderRole(project, role)) {
+      parsed.commit_sha ??= await readHeadSha(project.project.root);
+    }
+    validateTurnResult(project, role, parsed);
+
+    const finalArtifactPath = artifactPathFromResult(parsed);
+    if (finalArtifactPath) {
+      await appendWatchEvent(project.project.root, {
+        kind: "artifact_written",
+        iteration,
+        role,
+        message: `${capitalizeRole(role)} updated ${path.basename(finalArtifactPath)}`,
+        artifactPath: finalArtifactPath,
+      });
+    }
+    if (parsed.commit_sha) {
+      await appendWatchEvent(project.project.root, {
+        kind: "commit_recorded",
+        iteration,
+        role,
+        message: `${capitalizeRole(role)} recorded commit ${parsed.commit_sha.slice(0, 12)}`,
+        commitSha: parsed.commit_sha,
+      });
+    }
+    await appendControllerLog(project.project.root, role, iteration, parsed);
+    return parsed;
   }
-  await appendControllerLog(project.project.root, role, iteration, parsed);
-  return parsed;
+
+  throw new Error(`${capitalizeRole(role)} could not complete a managed turn after refreshing the session`);
 }
 
 async function ensureRoleThreadReady(
@@ -1017,6 +1040,19 @@ function shouldKeepCurrentRole(
 }
 
 export const shouldKeepCurrentRoleForTest = shouldKeepCurrentRole;
+
+function shouldRetryRoleTurnOnContractDrift(
+  roleSession: RoleSession,
+  result: ControllerTurnResult,
+): boolean {
+  return (
+    roleSession.sourceMode !== "new" &&
+    result.status === "blocked" &&
+    /Role output is not valid JSON:/i.test(result.blocking_reason ?? "")
+  );
+}
+
+export const shouldRetryRoleTurnOnContractDriftForTest = shouldRetryRoleTurnOnContractDrift;
 
 function validateScientistTurnResult(result: ControllerTurnResult): void {
   if (result.status === "goal_met" && result.assessment_passed !== true) {
